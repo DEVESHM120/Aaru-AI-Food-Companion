@@ -120,14 +120,19 @@ export default function ChatPage() {
       return;
     }
 
-    // No profiles yet — auto-seed from Zomato MCP in parallel
+    // No profiles yet — auto-seed from Zomato + Swiggy MCP in parallel
     setIsSeeding(true);
     Promise.all([
       fetch("/api/addresses").then((r) => r.json()).catch(() => [] as { address_id: string; location_name: string }[]),
       fetch("/api/user").then((r) => r.json()).catch(() => ({ name: null })),
       fetch("/api/orders").then((r) => r.json()).catch(() => []),
       fetch("/api/contacts").then((r) => r.json()).catch(() => []),
-    ]).then(([addresses, userInfo, orders, contacts]) => {
+      fetch("/api/swiggy-orders").then((r) => r.json()).catch(() => []),
+    ]).then(([addresses, userInfo, orders, contacts, swiggyOrders]) => {
+      // Merge Zomato + Swiggy orders, sorted newest first, capped at 20
+      const allOrders = [...(orders as any[]), ...(swiggyOrders as any[])]
+        .sort((a, b) => new Date(b.orderedAt ?? 0).getTime() - new Date(a.orderedAt ?? 0).getTime())
+        .slice(0, 20);
       setPreloadedAddresses(addresses);
 
       if (addresses.length === 0 && !userInfo?.name) {
@@ -155,7 +160,7 @@ export default function ChatPage() {
           priceRange: (userInfo?.budgetRange as "budget" | "mid" | "premium") ?? "mid",
           notes: userInfo?.allergies?.length ? `Allergies: ${userInfo.allergies.join(", ")}` : "",
         },
-        pastOrders: orders,
+        pastOrders: allOrders,
       };
 
       // Seed contact profiles (Divya, Mom, etc.) from Zomato saved contacts
