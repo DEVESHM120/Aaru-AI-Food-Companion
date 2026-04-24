@@ -1,27 +1,25 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-
-interface VoiceInputProps {
-  onTranscript: (text: string) => void;
-  disabled?: boolean;
-}
+import { useEffect, useRef, useCallback } from "react";
 
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
+  resultIndex: number;
 }
 
 interface SpeechRecognitionInstance extends EventTarget {
   lang: string;
+  continuous: boolean;
   interimResults: boolean;
   maxAlternatives: number;
   start(): void;
   stop(): void;
-  onstart: ((this: SpeechRecognitionInstance, ev: Event) => void) | null;
-  onend: ((this: SpeechRecognitionInstance, ev: Event) => void) | null;
-  onerror: ((this: SpeechRecognitionInstance, ev: Event) => void) | null;
-  onresult: ((this: SpeechRecognitionInstance, ev: SpeechRecognitionEvent) => void) | null;
+  abort(): void;
+  onstart: ((ev: Event) => void) | null;
+  onend: ((ev: Event) => void) | null;
+  onerror: ((ev: Event) => void) | null;
+  onspeechend: ((ev: Event) => void) | null;
+  onresult: ((ev: SpeechRecognitionEvent) => void) | null;
 }
 
 declare global {
@@ -31,103 +29,186 @@ declare global {
   }
 }
 
-export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) {
-  const [isListening, setIsListening] = useState(false);
-  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+interface VoiceInputProps {
+  isVoiceMode: boolean;
+  isSpeaking: boolean;
+  onInterimTranscript: (text: string) => void;
+  onFinalTranscript: (text: string) => void;
+  onListeningChange: (listening: boolean) => void;
+}
 
-  const startListening = useCallback(() => {
+const SILENCE_AFTER_FINAL_MS = 900;
+const SILENCE_AFTER_SPEECH_END_MS = 600;
+// How long after TTS ends to wait before starting recognition (prevents echo)
+const TTS_ECHO_COOLDOWN_MS = 1200;
+
+export default function VoiceInput({
+  isVoiceMode,
+  isSpeaking,
+  onInterimTranscript,
+  onFinalTranscript,
+  onListeningChange,
+}: VoiceInputProps) {
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const accumulatedRef = useRef("");
+  const isRunningRef = useRef(false);
+  const speechEndedRef = useRef(false);
+
+  // Callback refs — always point to latest props, never stale in closures
+  const onFinalRef = useRef(onFinalTranscript);
+  const onInterimRef = useRef(onInterimTranscript);
+  const onListeningRef = useRef(onListeningChange);
+
+  useEffect(() => { onFinalRef.current = onFinalTranscript; }, [onFinalTranscript]);
+  useEffect(() => { onInterimRef.current = onInterimTranscript; }, [onInterimTranscript]);
+  useEffect(() => { onListeningRef.current = onListeningChange; }, [onListeningChange]);
+
+  // BUG-003 fix: keep current isVoiceMode / isSpeaking in refs so onend never reads stale closure values
+  const isVoiceModeRef = useRef(isVoiceMode);
+  const isSpeakingRef = useRef(isSpeaking);
+  useEffect(() => { isVoiceModeRef.current = isVoiceMode; }, [isVoiceMode]);
+
+  // BUG-011 fix: TTS echo cooldown refs — effect is declared after startRecognition below
+  const ttsCooldownRef = useRef(false);
+  const ttsEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const submitAccumulated = useCallback(() => {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    const text = accumulatedRef.current.trim();
+    accumulatedRef.current = "";
+    speechEndedRef.current = false;
+    onInterimRef.current("");
+    if (text) onFinalRef.current(text);
+  }, []);
+
+  const scheduleSubmit = useCallback((delayMs: number) => {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    silenceTimerRef.current = setTimeout(submitAccumulated, delayMs);
+  }, [submitAccumulated]);
+
+  const stopRecognition = useCallback(() => {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (recognitionRef.current && isRunningRef.current) {
+      recognitionRef.current.abort();
+      isRunningRef.current = false;
+    }
+    onListeningRef.current(false);
+  }, []);
+
+  // BUG-003 + BUG-011 fix: startRecognition no longer captures isVoiceMode/isSpeaking in closure.
+  // Instead it reads from refs, so onend always sees current values.
+  const startRecognition = useCallback(() => {
+    // Don't start if echo cooldown is active (TTS just played)
+    if (ttsCooldownRef.current) return;
+
     const SpeechRecognitionClass =
       window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRecognitionClass) {
-      alert("Voice input is not supported in this browser. Try Chrome.");
-      return;
-    }
+    if (!SpeechRecognitionClass) return;
 
     const recognition = new SpeechRecognitionClass();
     recognition.lang = "en-IN";
-    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.interimResults = true;
     recognition.maxAlternatives = 1;
     recognitionRef.current = recognition;
+    accumulatedRef.current = "";
+    speechEndedRef.current = false;
 
-    recognition.onstart = () => setIsListening(true);
-    recognition.onend = () => setIsListening(false);
-    recognition.onerror = () => setIsListening(false);
+    recognition.onstart = () => {
+      isRunningRef.current = true;
+      onListeningRef.current(true);
+    };
 
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      onTranscript(transcript);
+    recognition.onspeechend = () => {
+      speechEndedRef.current = true;
+      if (accumulatedRef.current.trim()) {
+        scheduleSubmit(SILENCE_AFTER_SPEECH_END_MS);
+      }
+    };
+
+    recognition.onend = () => {
+      isRunningRef.current = false;
+      if (accumulatedRef.current.trim()) submitAccumulated();
+      // Read from refs — never stale (BUG-003 fix)
+      if (isVoiceModeRef.current && !isSpeakingRef.current && !ttsCooldownRef.current) {
+        setTimeout(() => {
+          if (!isRunningRef.current && !ttsCooldownRef.current) startRecognition();
+        }, 200);
+      } else {
+        onListeningRef.current(false);
+      }
+    };
+
+    recognition.onerror = (e: any) => {
+      isRunningRef.current = false;
+      if (e.error !== "no-speech" && e.error !== "aborted") {
+        onListeningRef.current(false);
+      }
+    };
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interim = "";
+      let finalChunk = "";
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          finalChunk += result[0].transcript;
+        } else {
+          interim += result[0].transcript;
+        }
+      }
+
+      if (interim) onInterimRef.current(interim);
+
+      if (finalChunk) {
+        accumulatedRef.current += finalChunk + " ";
+        onInterimRef.current(accumulatedRef.current.trim());
+        const delay = speechEndedRef.current
+          ? SILENCE_AFTER_SPEECH_END_MS
+          : SILENCE_AFTER_FINAL_MS;
+        scheduleSubmit(delay);
+      }
     };
 
     recognition.start();
-  }, [onTranscript]);
+  // BUG-003 fix: isVoiceMode and isSpeaking removed from deps — read via refs instead
+  }, [scheduleSubmit, submitAccumulated]);
 
-  const stopListening = useCallback(() => {
-    recognitionRef.current?.stop();
-    setIsListening(false);
-  }, []);
+  // BUG-011 fix: manage echo cooldown; restart recognition after cooldown expires
+  // Declared after startRecognition so the reference is available
+  useEffect(() => {
+    isSpeakingRef.current = isSpeaking;
+    if (isSpeaking) {
+      ttsCooldownRef.current = true;
+      if (ttsEndTimerRef.current) clearTimeout(ttsEndTimerRef.current);
+    } else {
+      if (ttsEndTimerRef.current) clearTimeout(ttsEndTimerRef.current);
+      ttsEndTimerRef.current = setTimeout(() => {
+        ttsCooldownRef.current = false;
+        // Resume listening after echo decay — this is the missing restart after TTS ends
+        if (isVoiceModeRef.current && !isRunningRef.current) {
+          startRecognition();
+        }
+      }, TTS_ECHO_COOLDOWN_MS);
+    }
+  }, [isSpeaking, startRecognition]);
 
-  return (
-    <div className="relative flex items-center justify-center">
-      <motion.button
-        type="button"
-        onClick={isListening ? stopListening : startListening}
-        disabled={disabled}
-        whileTap={{ scale: 0.92 }}
-        className={`
-          w-11 h-11 rounded-full flex items-center justify-center transition-colors
-          ${isListening
-            ? "bg-amber-500 text-white mic-active"
-            : "bg-stone-100 hover:bg-stone-200 text-stone-600"
-          }
-          disabled:opacity-40 disabled:cursor-not-allowed
-        `}
-        title={isListening ? "Stop recording" : "Speak to Aaru"}
-      >
-        <AnimatePresence mode="wait">
-          {isListening ? (
-            <motion.div
-              key="wave"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex items-center gap-0.5"
-            >
-              {[...Array(5)].map((_, i) => (
-                <span
-                  key={i}
-                  className="wave-bar w-0.5 bg-white rounded-full"
-                  style={{ animationDelay: `${i * 0.1}s` }}
-                />
-              ))}
-            </motion.div>
-          ) : (
-            <motion.svg
-              key="mic"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              className="w-5 h-5"
-            >
-              <path d="M8.25 4.5a3.75 3.75 0 1 1 7.5 0v8.25a3.75 3.75 0 1 1-7.5 0V4.5Z" />
-              <path d="M6 10.5a.75.75 0 0 1 .75.75v1.5a5.25 5.25 0 1 0 10.5 0v-1.5a.75.75 0 0 1 1.5 0v1.5a6.751 6.751 0 0 1-6 6.709v2.291h3a.75.75 0 0 1 0 1.5h-7.5a.75.75 0 0 1 0-1.5h3v-2.291A6.751 6.751 0 0 1 5.25 12.75v-1.5A.75.75 0 0 1 6 10.5Z" />
-            </motion.svg>
-          )}
-        </AnimatePresence>
-      </motion.button>
+  useEffect(() => {
+    if (isVoiceMode && !isSpeaking && !ttsCooldownRef.current) {
+      if (!isRunningRef.current) startRecognition();
+    } else {
+      stopRecognition();
+    }
+    return () => {
+      if (!isVoiceMode) stopRecognition();
+    };
+  }, [isVoiceMode, isSpeaking, startRecognition, stopRecognition]);
 
-      {isListening && (
-        <motion.span
-          initial={{ opacity: 0, y: 4 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="absolute -bottom-6 text-xs text-amber-600 whitespace-nowrap font-medium"
-        >
-          Listening...
-        </motion.span>
-      )}
-    </div>
-  );
+  useEffect(() => {
+    return () => stopRecognition();
+  }, [stopRecognition]);
+
+  return null;
 }
