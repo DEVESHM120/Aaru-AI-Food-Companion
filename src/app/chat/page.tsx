@@ -8,11 +8,12 @@ import VoiceInput from "@/components/VoiceInput";
 import VoiceStatusBar from "@/components/VoiceStatusBar";
 import RestaurantCards from "@/components/RestaurantCards";
 import DishCards from "@/components/DishCards";
+import ClarificationChips from "@/components/ClarificationChips";
 import OrderConfirmation from "@/components/OrderConfirmation";
 import ProfileManager from "@/components/ProfileManager";
 import {
   Message, InputMode, Restaurant, OrderDetails,
-  WeatherContext, VoiceState, QuickChip, Dish,
+  WeatherContext, VoiceState, QuickChip, Dish, ClarificationBlock,
 } from "@/lib/types";
 import { PersonProfile, PersonAddress } from "@/lib/profiles/types";
 import { getAllProfiles, saveProfile, newProfileId } from "@/lib/profiles/store";
@@ -90,6 +91,7 @@ export default function ChatPage() {
   const [isTTSSpeaking, setIsTTSSpeaking] = useState(false);
   const [restaurants, setRestaurants] = useState<Restaurant[] | null>(null);
   const [dishes, setDishes] = useState<Dish[] | null>(null);
+  const [clarification, setClarification] = useState<ClarificationBlock | null>(null);
   const [pendingOrder, setPendingOrder] = useState<OrderDetails | null>(null);
   const [orderPlaced, setOrderPlaced] = useState<OrderDetails | null>(null);
   const [activeProfile, setActiveProfile] = useState<PersonProfile | null>(null);
@@ -236,6 +238,7 @@ export default function ChatPage() {
       setInterimText("");
       setRestaurants(null);
       setDishes(null);
+      setClarification(null);
       setVoiceState("thinking");
 
       const history = [...messages, userMsg].map((m) => ({
@@ -290,6 +293,7 @@ export default function ChatPage() {
                   .replace(/```restaurants[\s\S]*?```/g, "")
                   .replace(/```dishes[\s\S]*?```/g, "")
                   .replace(/```order[\s\S]*?```/g, "")
+                  .replace(/```clarification[\s\S]*?```/g, "")
                   .trim();
                 setMessages((prev) =>
                   prev.map((m) => m.id === aiId ? { ...m, content: displayText } : m)
@@ -321,6 +325,7 @@ export default function ChatPage() {
                 if (event.restaurants) setRestaurants(event.restaurants);
                 if (event.dishes) setDishes(event.dishes);
                 if (event.orderDetails) setPendingOrder(event.orderDetails);
+                if (event.clarification) setClarification(event.clarification);
 
                 if (mode === "voice" && event.shouldSpeak && event.cleanText) {
                   if (streamTTSStarted && streamTTSPromise) {
@@ -366,6 +371,14 @@ export default function ChatPage() {
       if (isVoiceMode && !isTTSSpeaking) setVoiceState(l ? "listening" : "idle");
     },
     [isVoiceMode, isTTSSpeaking]
+  );
+
+  const handleClarificationSelect = useCallback(
+    (option: string) => {
+      setClarification(null);
+      sendMessage(option, isVoiceMode ? "voice" : "text");
+    },
+    [sendMessage, isVoiceMode]
   );
 
   const toggleVoiceMode = () => {
@@ -559,6 +572,18 @@ export default function ChatPage() {
                   estimatedDelivery: dish.deliveryTime ?? 30,
                 })
               }
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Clarification chips */}
+        <AnimatePresence>
+          {clarification && !isThinking && (
+            <ClarificationChips
+              question={clarification.question}
+              options={clarification.options}
+              onSelect={handleClarificationSelect}
+              disabled={isThinking}
             />
           )}
         </AnimatePresence>

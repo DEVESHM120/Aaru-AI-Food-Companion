@@ -37,8 +37,8 @@ export async function POST(req: NextRequest) {
         try {
           const stream = client.messages.stream({
             model: "claude-sonnet-4-6",
-            max_tokens: 512,
-            system: systemPrompt + "\n\nIMPORTANT: Always include EITHER a ```restaurants block OR a ```dishes block (never both). Use ```dishes when the user asks about specific food items, prices, or menu. Use ```restaurants when the user asks about which place to order from. Default to ```dishes — it's more helpful. Use real Indian names and INR prices.",
+            max_tokens: 600,
+            system: systemPrompt + "\n\nIMPORTANT: Follow the intent classification rules in your instructions. For VAGUE intent with no profile signal → use ONLY the ```clarification block (no dishes/restaurants). For all other intents → use EITHER ```restaurants OR ```dishes (never both, never with clarification). Always use real Indian names and INR prices.",
             messages,
           });
 
@@ -63,15 +63,18 @@ export async function POST(req: NextRequest) {
             .replace(/```restaurants[\s\S]*?```/g, "")
             .replace(/```dishes[\s\S]*?```/g, "")
             .replace(/```order[\s\S]*?```/g, "")
+            .replace(/```clarification[\s\S]*?```/g, "")
             .trim();
 
           const restaurantMatch = fullText.match(/```restaurants\n([\s\S]*?)\n```/);
           const dishesMatch = fullText.match(/```dishes\n([\s\S]*?)\n```/);
           const orderMatch = fullText.match(/```order\n([\s\S]*?)\n```/);
+          const clarificationMatch = fullText.match(/```clarification\n([\s\S]*?)\n```/);
 
           let restaurants = null;
           let dishes = null;
           let orderDetails = null;
+          let clarification = null;
 
           if (restaurantMatch) {
             try { restaurants = JSON.parse(restaurantMatch[1]); } catch {}
@@ -82,6 +85,9 @@ export async function POST(req: NextRequest) {
           if (orderMatch) {
             try { orderDetails = JSON.parse(orderMatch[1]); } catch {}
           }
+          if (clarificationMatch) {
+            try { clarification = JSON.parse(clarificationMatch[1]); } catch {}
+          }
 
           controller.enqueue(
             encoder.encode(
@@ -91,6 +97,7 @@ export async function POST(req: NextRequest) {
                 restaurants,
                 dishes,
                 orderDetails,
+                clarification,
                 shouldSpeak: inputMode === "voice",
               })}\n\n`
             )

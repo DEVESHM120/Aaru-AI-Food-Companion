@@ -68,3 +68,8 @@ export interface QuickChip {
   emoji: string;
   query: string;
 }
+
+export interface ClarificationBlock {
+  question: string;
+  options: string[];
+}
