@@ -54,7 +54,19 @@ function getQuickChips(): QuickChip[] {
   ];
 }
 
+// Module-level ref so any call can stop the current audio before starting new
+let activeAudio: HTMLAudioElement | null = null;
+
+function stopActiveAudio() {
+  if (activeAudio) {
+    activeAudio.pause();
+    activeAudio.src = "";
+    activeAudio = null;
+  }
+}
+
 async function playTTS(text: string): Promise<void> {
+  stopActiveAudio();
   return new Promise((resolve) => {
     fetch("/api/tts", {
       method: "POST",
@@ -65,9 +77,15 @@ async function playTTS(text: string): Promise<void> {
       .then((blob) => {
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
-        audio.onended = () => resolve();
-        audio.onerror = () => resolve();
-        audio.play().catch(() => resolve());
+        activeAudio = audio;
+        const cleanup = () => {
+          URL.revokeObjectURL(url);
+          if (activeAudio === audio) activeAudio = null;
+          resolve();
+        };
+        audio.onended = cleanup;
+        audio.onerror = cleanup;
+        audio.play().catch(cleanup);
       })
       .catch(() => resolve());
   });
@@ -238,6 +256,7 @@ export default function ChatPage() {
         timestamp: new Date(),
       };
 
+      stopActiveAudio();
       setMessages((prev) => [...prev, userMsg]);
       setInput("");
       setInterimText("");
@@ -335,7 +354,9 @@ export default function ChatPage() {
                 if (mode === "voice" && event.shouldSpeak && event.cleanText) {
                   if (streamTTSStarted && streamTTSPromise) {
                     await streamTTSPromise;
-                    const remaining = event.cleanText.replace(streamTTSFirstText, "").trim();
+                    // Slice by character count — avoids mismatch from .replace() when
+                    // cleanText has minor whitespace differences from the streamed version
+                    const remaining = event.cleanText.slice(streamTTSFirstText.length).trim();
                     if (remaining) await playTTS(remaining);
                   } else {
                     setVoiceState("speaking");
