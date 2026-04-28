@@ -35,3 +35,5 @@ next-env.d.ts
 
 # local profile data (auto-generated from Zomato MCP)
 /data/
+
+.vercel

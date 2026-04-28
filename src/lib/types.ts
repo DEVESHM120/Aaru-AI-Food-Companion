@@ -33,6 +33,7 @@ export interface OrderDetails {
   platform: "zomato" | "swiggy";
   estimatedDelivery: number;
   autonomous?: boolean;
+  deliveryAddress?: { label: string; locationName: string; addressId?: string };
 }
 
 export interface Dish {
@@ -45,6 +46,8 @@ export interface Dish {
   description?: string;
   deliveryTime?: number;
   offer?: string;
+  isRecommended?: boolean;
+  whyRecommended?: string;
 }
 
 export interface WeatherContext {

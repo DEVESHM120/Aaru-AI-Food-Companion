@@ -10,13 +10,19 @@ import RestaurantCards from "@/components/RestaurantCards";
 import DishCards from "@/components/DishCards";
 import ClarificationChips from "@/components/ClarificationChips";
 import OrderConfirmation from "@/components/OrderConfirmation";
+import AddressPickerSheet from "@/components/AddressPickerSheet";
 import ProfileManager from "@/components/ProfileManager";
+import AIThinking from "@/components/AIThinking";
+import SettingsModal from "@/components/SettingsModal";
+import SetupWizard, { UserKeys } from "@/components/SetupWizard";
+import type { VoiceInputHandle } from "@/components/VoiceInput";
+import TrialBanner from "@/components/TrialBanner";
 import {
   Message, InputMode, Restaurant, OrderDetails,
   WeatherContext, VoiceState, QuickChip, Dish, ClarificationBlock,
 } from "@/lib/types";
 import { PersonProfile, PersonAddress } from "@/lib/profiles/types";
-import { getAllProfiles, saveProfile, newProfileId } from "@/lib/profiles/store";
+import { getAllProfiles, saveProfile, newProfileId, addMemory, setMemories } from "@/lib/profiles/store";
 
 const WELCOME: Message = {
   id: "welcome",
@@ -54,42 +60,62 @@ function getQuickChips(): QuickChip[] {
   ];
 }
 
-// Module-level ref so any call can stop the current audio before starting new
-let activeAudio: HTMLAudioElement | null = null;
-
-function stopActiveAudio() {
-  if (activeAudio) {
-    activeAudio.pause();
-    activeAudio.src = "";
-    activeAudio = null;
-  }
+// Fetch with abort timeout — used for profile-seeding calls on mount
+function fetchWithTimeout<T>(url: string, fallback: T, ms = 8000): Promise<T> {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { signal: ctrl.signal })
+    .then((r) => r.json() as Promise<T>)
+    .catch(() => fallback)
+    .finally(() => clearTimeout(id));
 }
 
-async function playTTS(text: string): Promise<void> {
+// Shared AudioContext — once resumed from a user gesture, stays unlocked all session
+let sharedAudioCtx: AudioContext | null = null;
+let activeSource: AudioBufferSourceNode | null = null;
+
+function getAudioCtx(): AudioContext {
+  if (!sharedAudioCtx) {
+    sharedAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  return sharedAudioCtx;
+}
+
+function stopActiveAudio() {
+  try { activeSource?.stop(); } catch {}
+  activeSource = null;
+}
+
+async function playTTS(text: string, elevenLabsKey?: string): Promise<void> {
   stopActiveAudio();
   return new Promise((resolve) => {
     fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, elevenLabsKey }),
     })
-      .then((r) => r.blob())
-      .then((blob) => {
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        activeAudio = audio;
-        const cleanup = () => {
-          URL.revokeObjectURL(url);
-          if (activeAudio === audio) activeAudio = null;
-          resolve();
-        };
-        audio.onended = cleanup;
-        audio.onerror = cleanup;
-        audio.play().catch(cleanup);
+      .then((r) => {
+        const ct = r.headers.get("Content-Type") ?? "";
+        if (!r.ok || !ct.includes("audio")) return Promise.reject(new Error("not audio"));
+        return r.arrayBuffer();
+      })
+      .then(async (buffer) => {
+        const ctx = getAudioCtx();
+        // Ensure context is running (iOS suspends it between gestures)
+        if (ctx.state === "suspended") await ctx.resume();
+        const audioBuffer = await ctx.decodeAudioData(buffer);
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+        activeSource = source;
+        source.onended = () => { activeSource = null; resolve(); };
+        source.start(0);
       })
       .catch(() => resolve());
   });
 }
+
+const LEARNING_SIGNAL = /\b(don'?t|never|always|prefer|hate|love|allergic|remember|told you|wrong|actually|favourite|dislike|not again|bored of|i'?m|vegan|vegetarian|keto|lactose|avoid|stop|please no)\b/i;
 
 function extractCity(locationName: string): string {
   const parts = locationName.split(",");
@@ -111,6 +137,7 @@ export default function ChatPage() {
   const [dishes, setDishes] = useState<Dish[] | null>(null);
   const [clarification, setClarification] = useState<ClarificationBlock | null>(null);
   const [pendingOrder, setPendingOrder] = useState<OrderDetails | null>(null);
+  const [pendingOrderNoAddr, setPendingOrderNoAddr] = useState<OrderDetails | null>(null);
   const [orderPlaced, setOrderPlaced] = useState<OrderDetails | null>(null);
   const [activeProfile, setActiveProfile] = useState<PersonProfile | null>(null);
   const [allProfiles, setAllProfiles] = useState<PersonProfile[]>([]);
@@ -118,13 +145,84 @@ export default function ChatPage() {
   const [quickChips] = useState<QuickChip[]>(getQuickChips());
   const [chipsVisible, setChipsVisible] = useState(true);
   const [preloadedAddresses, setPreloadedAddresses] = useState<{ address_id: string; location_name: string }[]>([]);
-  const [isSeeding, setIsSeeding] = useState(false); // auto-seeding profile from Zomato
+  const [isSeeding, setIsSeeding] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [userKeys, setUserKeys] = useState<UserKeys>({ anthropicKey: "", elevenLabsKey: "", zomatoToken: "", swiggyToken: "", tier: "trial" });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [trialUsed, setTrialUsed] = useState(0);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   const isThinking = voiceState === "thinking";
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // BUG-009 fix: keep current isVoiceMode in a ref so async sendMessage closures don't go stale
+  const voiceInputRef = useRef<VoiceInputHandle>(null);
   const isVoiceModeRef = useRef(isVoiceMode);
   useEffect(() => { isVoiceModeRef.current = isVoiceMode; }, [isVoiceMode]);
+
+  // ── iOS AudioContext unlock — resume shared ctx on first user gesture ────────
+  useEffect(() => {
+    const unlock = () => {
+      const ctx = getAudioCtx();
+      if (ctx.state === "suspended") {
+        ctx.resume().then(() => {
+          // Play 1 frame of silence so iOS marks this context as "user-activated"
+          const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
+          const src = ctx.createBufferSource();
+          src.buffer = buf;
+          src.connect(ctx.destination);
+          src.start(0);
+        }).catch(() => {});
+      }
+    };
+    document.addEventListener("touchstart", unlock, { once: true, capture: true });
+    document.addEventListener("click", unlock, { once: true, capture: true });
+    return () => {
+      document.removeEventListener("touchstart", unlock, true);
+      document.removeEventListener("click", unlock, true);
+    };
+  }, []);
+
+  // ── Theme + user keys + trial init ───────────────────────────────────────────
+  useEffect(() => {
+    const saved = localStorage.getItem("aaru-theme") as "dark" | "light" | null;
+    const initial = saved ?? "dark";
+    setTheme(initial);
+    document.documentElement.setAttribute("data-theme", initial);
+
+    try {
+      const raw = localStorage.getItem("aaru-user-keys");
+      if (raw) setUserKeys((prev) => ({ ...prev, ...JSON.parse(raw) }));
+    } catch {}
+
+    const used = parseInt(localStorage.getItem("aaru-trial-msgs-used") ?? "0", 10);
+    setTrialUsed(isNaN(used) ? 0 : used);
+
+    // Read OAuth tokens passed back via URL params after OAuth redirect
+    const params = new URLSearchParams(window.location.search);
+    const swiggyToken = params.get("swiggy_token");
+    const zomatoToken = params.get("zomato_token");
+    if (swiggyToken || zomatoToken) {
+      setUserKeys((prev) => {
+        const next = { ...prev, ...(swiggyToken ? { swiggyToken, tier: "full" as const } : {}), ...(zomatoToken ? { zomatoToken, tier: "full" as const } : {}) };
+        localStorage.setItem("aaru-user-keys", JSON.stringify(next));
+        return next;
+      });
+      // Clean URL
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
+    // Auto-open wizard on first visit
+    if (!localStorage.getItem("aaru-setup-seen")) {
+      setTimeout(() => setWizardOpen(true), 600);
+    }
+  }, []);
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem("aaru-theme", next);
+  };
 
   // ── On mount: load profiles and pre-fetch everything in parallel ──────────────
   useEffect(() => {
@@ -133,22 +231,32 @@ export default function ChatPage() {
     if (existing.length > 0) {
       setAllProfiles(existing);
       setActiveProfile(existing[0]);
-      // Still pre-load addresses for ProfileManager (for adding new addresses)
       fetch("/api/addresses").then((r) => r.json()).then(setPreloadedAddresses).catch(() => {});
+      // Sync memories from KV (cross-device source of truth)
+      const profile = existing[0];
+      fetch(`/api/memories?profileName=${encodeURIComponent(profile.name)}`)
+        .then((r) => r.json())
+        .then(({ memories }: { memories: string[] }) => {
+          if (memories.length > 0) {
+            setMemories(profile.id, memories);
+            setActiveProfile((prev) => prev ? { ...prev, memories } : prev);
+          }
+        })
+        .catch(() => {});
       return;
     }
 
-    // No profiles yet — auto-seed from Zomato + Swiggy MCP in parallel
     setIsSeeding(true);
     Promise.all([
-      fetch("/api/addresses").then((r) => r.json()).catch(() => [] as { address_id: string; location_name: string }[]),
-      fetch("/api/user").then((r) => r.json()).catch(() => ({ name: null })),
-      fetch("/api/orders").then((r) => r.json()).catch(() => []),
-      fetch("/api/contacts").then((r) => r.json()).catch(() => []),
-      fetch("/api/swiggy-orders").then((r) => r.json()).catch(() => []),
+      fetchWithTimeout<{ address_id: string; location_name: string }[]>("/api/addresses", [], 8000),
+      fetchWithTimeout<{ name: string | null; diet?: string; budgetRange?: string; preferredCuisines?: string[]; allergies?: string[] }>("/api/user", { name: null }, 8000),
+      fetchWithTimeout<any[]>("/api/orders", [], 8000),
+      fetchWithTimeout<any[]>("/api/contacts", [], 8000),
+      fetchWithTimeout<any[]>("/api/swiggy-orders", [], 8000),
     ]).then(([addresses, userInfo, orders, contacts, swiggyOrders]) => {
-      // Merge Zomato + Swiggy orders, sorted newest first, capped at 20
-      const allOrders = [...(orders as any[]), ...(swiggyOrders as any[])]
+      const safeOrders = Array.isArray(orders) ? orders : [];
+      const safeSwiggy = Array.isArray(swiggyOrders) ? swiggyOrders : [];
+      const allOrders = [...safeOrders, ...safeSwiggy]
         .sort((a, b) => new Date(b.orderedAt ?? 0).getTime() - new Date(a.orderedAt ?? 0).getTime())
         .slice(0, 20);
       setPreloadedAddresses(addresses);
@@ -181,7 +289,6 @@ export default function ChatPage() {
         pastOrders: allOrders,
       };
 
-      // Seed contact profiles (Divya, Mom, etc.) from Zomato saved contacts
       const contactProfiles: PersonProfile[] = (contacts as { name: string; diet?: string; notes?: string; addresses?: { label: string; locationName: string }[] }[])
         .filter((c) => c.name)
         .map((c) => ({
@@ -207,16 +314,8 @@ export default function ChatPage() {
       allNew.forEach(saveProfile);
       setAllProfiles(allNew);
       setActiveProfile(profile);
-
-      // Write profile.md server-side — fire-and-forget
-      fetch("/api/profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ primaryProfile: profile, contacts, userInfo }),
-      }).catch(() => {});
-
       setIsSeeding(false);
-    });
+    }).catch(() => setIsSeeding(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -242,10 +341,37 @@ export default function ChatPage() {
     }
   }, [input]);
 
+  // ── Order select — address picker logic ───────────────────────────────────────
+  const handleOrderSelect = useCallback((order: OrderDetails) => {
+    if (activeProfile && activeProfile.addresses.length > 1) {
+      setPendingOrderNoAddr(order);
+    } else {
+      const addr = activeProfile?.addresses[0];
+      setPendingOrder({
+        ...order,
+        deliveryAddress: addr
+          ? { label: addr.label, locationName: addr.locationName, addressId: addr.addressId }
+          : undefined,
+      });
+    }
+  }, [activeProfile]);
+
+  const handleAddressPicked = useCallback((addr: PersonAddress) => {
+    if (!pendingOrderNoAddr) return;
+    setPendingOrderNoAddr(null);
+    setPendingOrder({
+      ...pendingOrderNoAddr,
+      deliveryAddress: { label: addr.label, locationName: addr.locationName, addressId: addr.addressId },
+    });
+  }, [pendingOrderNoAddr]);
+
+  const trialExhausted = !userKeys.anthropicKey && trialUsed >= 50;
+
   // ── Core send message ─────────────────────────────────────────────────────────
   const sendMessage = useCallback(
     async (text: string, mode: InputMode = "text") => {
       if (!text.trim() || voiceState === "thinking") return;
+      if (trialExhausted) { setWizardOpen(true); return; }
 
       setChipsVisible(false);
       const userMsg: Message = {
@@ -286,14 +412,19 @@ export default function ChatPage() {
             activeProfile,
             allProfiles,
             weather,
+            anthropicKey: userKeys.anthropicKey || undefined,
+            zomatoToken: userKeys.zomatoToken || undefined,
+            swiggyToken: userKeys.swiggyToken || undefined,
+            isTrial: !userKeys.anthropicKey,
           }),
         });
 
-        const reader = res.body!.getReader();
+        if (!res.body) throw new Error("No response body from server");
+        const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let fullText = "";
+        let gotDone = false;
 
-        // Streaming TTS state — speak first sentence as soon as it arrives
         let streamTTSFirstText = "";
         let streamTTSStarted = false;
         let streamTTSPromise: Promise<void> | null = null;
@@ -311,6 +442,14 @@ export default function ChatPage() {
             try {
               const event = JSON.parse(raw);
 
+              if (event.type === "error") {
+                setMessages((prev) =>
+                  prev.map((m) => m.id === aiId ? { ...m, content: event.message || "Something went wrong. Try again!", streaming: false } : m)
+                );
+                setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
+                gotDone = true;
+              }
+
               if (event.type === "chunk") {
                 fullText += event.text;
                 const displayText = fullText
@@ -323,13 +462,11 @@ export default function ChatPage() {
                   prev.map((m) => m.id === aiId ? { ...m, content: displayText } : m)
                 );
 
-                // Mid-stream card parsing
                 const rMatch = fullText.match(/```restaurants\n([\s\S]*?)\n```/);
                 if (rMatch) { try { setRestaurants(JSON.parse(rMatch[1])); } catch {} }
                 const dMatch = fullText.match(/```dishes\n([\s\S]*?)\n```/);
                 if (dMatch) { try { setDishes(JSON.parse(dMatch[1])); } catch {} }
 
-                // Streaming TTS — speak first complete sentence immediately in voice mode
                 if (mode === "voice" && !streamTTSStarted && displayText.length > 8) {
                   const sentenceMatch = displayText.match(/^(.{6,}?[.!?।])\s/);
                   if (sentenceMatch) {
@@ -337,7 +474,7 @@ export default function ChatPage() {
                     streamTTSStarted = true;
                     setVoiceState("speaking");
                     setIsTTSSpeaking(true);
-                    streamTTSPromise = playTTS(streamTTSFirstText); // fire immediately, don't await
+                    streamTTSPromise = playTTS(streamTTSFirstText, userKeys.elevenLabsKey || undefined);
                   }
                 }
               }
@@ -346,32 +483,67 @@ export default function ChatPage() {
                 setMessages((prev) =>
                   prev.map((m) => m.id === aiId ? { ...m, content: event.cleanText, streaming: false } : m)
                 );
+                // Increment trial counter if in trial mode
+                if (!userKeys.anthropicKey) {
+                  setTrialUsed((prev) => {
+                    const next = prev + 1;
+                    localStorage.setItem("aaru-trial-msgs-used", String(next));
+                    return next;
+                  });
+                }
                 if (event.restaurants) setRestaurants(event.restaurants);
                 if (event.dishes) setDishes(event.dishes);
-                if (event.orderDetails) setPendingOrder(event.orderDetails);
+                if (event.orderDetails) handleOrderSelect(event.orderDetails);
                 if (event.clarification) setClarification(event.clarification);
 
                 if (mode === "voice" && event.shouldSpeak && event.cleanText) {
                   if (streamTTSStarted && streamTTSPromise) {
                     await streamTTSPromise;
-                    // Slice by character count — avoids mismatch from .replace() when
-                    // cleanText has minor whitespace differences from the streamed version
                     const remaining = event.cleanText.slice(streamTTSFirstText.length).trim();
-                    if (remaining) await playTTS(remaining);
+                    if (remaining) await playTTS(remaining, userKeys.elevenLabsKey || undefined);
                   } else {
                     setVoiceState("speaking");
                     setIsTTSSpeaking(true);
-                    await playTTS(event.cleanText);
+                    await playTTS(event.cleanText, userKeys.elevenLabsKey || undefined);
                   }
                 }
-                // BUG-010 fix: always reset TTS state regardless of shouldSpeak
-                // (streaming TTS may have set isTTSSpeaking=true even when shouldSpeak is false)
                 setIsTTSSpeaking(false);
-                // BUG-009 fix: read current isVoiceMode from ref, not stale closure
                 setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
+                gotDone = true;
+
+                // Background memory extraction — fires only on learning signals, zero latency impact
+                if (activeProfile && LEARNING_SIGNAL.test(text) && event.cleanText) {
+                  fetch("/api/extract-memory", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      userMessage: text,
+                      assistantReply: event.cleanText,
+                      profileName: activeProfile.name,
+                    }),
+                  })
+                    .then((r) => r.json())
+                    .then(({ fact }: { fact: string | null }) => {
+                      if (fact && activeProfile) {
+                        addMemory(activeProfile.id, fact);
+                        setActiveProfile((prev) => prev
+                          ? { ...prev, memories: [fact, ...(prev.memories ?? [])].slice(0, 30) }
+                          : prev
+                        );
+                      }
+                    })
+                    .catch(() => {});
+                }
               }
             } catch {}
           }
+        }
+        // Safety net: if stream closed without a done/error event, unblock the UI
+        if (!gotDone) {
+          setMessages((prev) =>
+            prev.map((m) => m.id === aiId && m.streaming ? { ...m, streaming: false } : m)
+          );
+          setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
         }
       } catch {
         setMessages((prev) =>
@@ -384,10 +556,9 @@ export default function ChatPage() {
         setVoiceState(isVoiceMode ? "listening" : "idle");
       }
     },
-    [messages, voiceState, isVoiceMode, activeProfile, allProfiles, weather]
+    [messages, voiceState, isVoiceMode, activeProfile, allProfiles, weather, handleOrderSelect]
   );
 
-  // Memoized voice callbacks
   const handleFinalTranscript = useCallback(
     (text: string) => sendMessage(text, "voice"),
     [sendMessage]
@@ -412,13 +583,18 @@ export default function ChatPage() {
     setIsVoiceMode(next);
     setVoiceState(next ? "listening" : "idle");
     setInterimText("");
+    // Call directly within the tap handler — preserves iOS gesture context
+    if (next) {
+      voiceInputRef.current?.startListening();
+    } else {
+      voiceInputRef.current?.stopListening();
+    }
   };
 
   const handleConfirmOrder = useCallback(async () => {
     if (!pendingOrder) return;
     setOrderPlaced(pendingOrder);
     setPendingOrder(null);
-    // BUG-008 fix: use current voice mode so Aaru speaks the confirmation in voice mode
     await sendMessage(
       `Yes, confirm the order from ${pendingOrder.restaurant.name} on ${pendingOrder.platform}.`,
       isVoiceModeRef.current ? "voice" : "text"
@@ -440,25 +616,44 @@ export default function ChatPage() {
   const displayInput = interimText || input;
 
   return (
-    <div className="flex flex-col h-screen bg-[#FAFAF9]">
+    <div className="flex flex-col h-screen" style={{ backgroundColor: "var(--bg)", color: "var(--text)" }}>
       <VoiceInput
+        ref={voiceInputRef}
         isVoiceMode={isVoiceMode}
         isSpeaking={isTTSSpeaking}
         onInterimTranscript={setInterimText}
         onFinalTranscript={handleFinalTranscript}
         onListeningChange={handleListeningChange}
+        onError={(msg) => { setVoiceError(msg); setIsVoiceMode(false); setVoiceState("idle"); }}
       />
 
       {/* Header */}
-      <header className="border-b border-stone-200 bg-white/80 backdrop-blur-md px-4 py-3 flex items-center justify-between flex-shrink-0 z-30">
+      <header
+        className="px-4 py-3 flex items-center justify-between flex-shrink-0 z-30"
+        style={{
+          backgroundColor: "var(--header-bg)",
+          backdropFilter: "blur(16px)",
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
         <Link href="/" className="flex items-center gap-2 group">
-          <span className="text-xl">🍽️</span>
-          <span className="font-bold text-stone-900 group-hover:text-amber-600 transition-colors">Aaru</span>
+          <span className="text-lg">🔥</span>
+          <span className="font-bold text-base tracking-tight" style={{ color: "var(--text)" }}>
+            aaru
+          </span>
         </Link>
 
         <div className="flex items-center gap-2">
+          {/* Syncing indicator */}
           {isSeeding && (
-            <span className="text-xs text-stone-400 animate-pulse">Syncing Zomato...</span>
+            <motion.span
+              animate={{ opacity: [0.5, 1, 0.5] }}
+              transition={{ duration: 1.2, repeat: Infinity }}
+              className="text-xs px-2 py-1 rounded-full"
+              style={{ color: "var(--accent-2)", backgroundColor: "rgba(255,122,0,0.08)", border: "1px solid rgba(255,122,0,0.15)" }}
+            >
+              Syncing...
+            </motion.span>
           )}
 
           <ProfileManager
@@ -469,44 +664,76 @@ export default function ChatPage() {
             onAllProfilesChange={setAllProfiles}
           />
 
+          {/* Settings */}
           <motion.button
-            onClick={toggleVoiceMode}
+            onClick={() => userKeys.anthropicKey ? setSettingsOpen(true) : setWizardOpen(true)}
             whileTap={{ scale: 0.93 }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
-              isVoiceMode
-                ? "bg-amber-500 text-white shadow-md shadow-amber-200"
-                : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-            }`}
+            className="w-8 h-8 rounded-full flex items-center justify-center text-sm transition-all"
+            style={{ backgroundColor: "var(--surface-2)", border: "1px solid var(--border)" }}
+            title="Settings"
           >
-            {isVoiceMode ? (
-              <>
-                <motion.span animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity, duration: 1.5 }}>🎤</motion.span>
-                Voice ON
-              </>
-            ) : (
-              <><span>🎤</span> Voice</>
-            )}
+            ⚙️
           </motion.button>
 
+          {/* Theme toggle */}
+          <motion.button
+            onClick={toggleTheme}
+            whileTap={{ scale: 0.93 }}
+            className="w-8 h-8 rounded-full flex items-center justify-center text-sm transition-all"
+            style={{ backgroundColor: "var(--surface-2)", border: "1px solid var(--border)" }}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? "☀️" : "🌙"}
+          </motion.button>
+
+          {/* Weather */}
           {weather && (
-            <span className="hidden sm:flex items-center gap-1 text-xs text-stone-500 bg-stone-100 px-2 py-1 rounded-full">
+            <span
+              className="hidden sm:flex items-center gap-1 text-xs px-2 py-1 rounded-full"
+              style={{ color: "var(--text-muted)", backgroundColor: "var(--surface-2)" }}
+            >
               {weather.isHot ? "☀️" : weather.isRaining ? "🌧️" : "🌤️"} {weather.tempC}°C
             </span>
           )}
         </div>
       </header>
 
-      {/* Auto-seed name prompt — shown when profile name is generic */}
+      {/* Trial banner */}
+      <AnimatePresence>
+        {!userKeys.anthropicKey && trialUsed < 50 && (
+          <TrialBanner used={trialUsed} onUpgrade={() => setWizardOpen(true)} />
+        )}
+      </AnimatePresence>
+
+      {/* Voice error banner */}
+      <AnimatePresence>
+        {voiceError && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+            className="flex items-center justify-between gap-3 px-4 py-2 text-xs"
+            style={{ backgroundColor: "rgba(220,38,38,0.08)", borderBottom: "1px solid rgba(220,38,38,0.18)", color: "#DC2626" }}
+          >
+            <span>🎤 {voiceError}</span>
+            <button onClick={() => setVoiceError(null)} className="opacity-60 hover:opacity-100 text-base leading-none">×</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Name prompt banner */}
       <AnimatePresence>
         {activeProfile && (activeProfile.name === "Me" || activeProfile.name === "") && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center gap-3 text-sm"
+            className="px-4 py-2 flex items-center gap-3 text-sm"
+            style={{
+              backgroundColor: "rgba(255,69,0,0.06)",
+              borderBottom: "1px solid rgba(255,69,0,0.12)",
+            }}
           >
-            <span className="text-amber-600">👤</span>
-            <span className="text-stone-700 flex-1">What should Aaru call you?</span>
+            <span>👤</span>
+            <span className="flex-1" style={{ color: "var(--text)" }}>What should Aaru call you?</span>
             <NameInput
               onSave={(name) => {
                 const updated = { ...activeProfile, name };
@@ -526,12 +753,17 @@ export default function ChatPage() {
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="bg-green-50 border-b border-green-200 px-4 py-3 text-sm text-green-800 font-medium flex items-center justify-between"
+            className="px-4 py-3 text-sm font-medium flex items-center justify-between"
+            style={{
+              backgroundColor: "rgba(34,197,94,0.08)",
+              borderBottom: "1px solid rgba(34,197,94,0.15)",
+              color: "#22C55E",
+            }}
           >
             <span>
               🎉 Ordered from <strong>{orderPlaced.restaurant.name}</strong> via {orderPlaced.platform}! ~{orderPlaced.estimatedDelivery} min.
             </span>
-            <button onClick={() => setOrderPlaced(null)} className="text-green-600 text-lg ml-4">×</button>
+            <button onClick={() => setOrderPlaced(null)} className="text-lg ml-4 opacity-60 hover:opacity-100">×</button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -549,14 +781,27 @@ export default function ChatPage() {
               exit={{ opacity: 0, y: 4 }}
               className="px-4 pb-2"
             >
-              <p className="text-xs text-stone-400 mb-2 px-1">Quick picks</p>
+              <p className="text-xs mb-2 px-1" style={{ color: "var(--text-muted)" }}>Quick picks</p>
               <div className="flex gap-2 flex-wrap">
                 {quickChips.map((chip) => (
                   <motion.button
                     key={chip.label}
                     whileTap={{ scale: 0.95 }}
                     onClick={() => sendMessage(chip.query, "text")}
-                    className="flex items-center gap-1.5 bg-white border border-stone-200 hover:border-amber-300 hover:bg-amber-50 text-stone-700 text-sm font-medium px-4 py-2 rounded-2xl transition-all shadow-sm"
+                    className="flex items-center gap-1.5 text-sm font-medium px-4 py-2 rounded-2xl transition-all"
+                    style={{
+                      backgroundColor: "var(--surface)",
+                      border: "1px solid var(--border)",
+                      color: "var(--text)",
+                    }}
+                    onMouseEnter={(e) => {
+                      (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(255,69,0,0.3)";
+                      (e.currentTarget as HTMLButtonElement).style.backgroundColor = "rgba(255,69,0,0.05)";
+                    }}
+                    onMouseLeave={(e) => {
+                      (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
+                      (e.currentTarget as HTMLButtonElement).style.backgroundColor = "var(--surface)";
+                    }}
                   >
                     <span>{chip.emoji}</span> {chip.label}
                   </motion.button>
@@ -571,7 +816,7 @@ export default function ChatPage() {
           {restaurants && !isThinking && (
             <RestaurantCards
               restaurants={restaurants}
-              onSelect={(order) => setPendingOrder(order)}
+              onSelect={handleOrderSelect}
             />
           )}
         </AnimatePresence>
@@ -582,7 +827,7 @@ export default function ChatPage() {
             <DishCards
               dishes={dishes}
               onSelect={(dish) =>
-                setPendingOrder({
+                handleOrderSelect({
                   restaurant: {
                     id: `${dish.restaurantName}-${dish.platform}`,
                     name: dish.restaurantName,
@@ -614,13 +859,25 @@ export default function ChatPage() {
           )}
         </AnimatePresence>
 
+        {/* AI thinking indicator */}
+        <AnimatePresence>
+          {isThinking && <AIThinking />}
+        </AnimatePresence>
+
         <div className="h-4" />
       </div>
 
       <VoiceStatusBar state={voiceState} />
 
       {/* Input bar */}
-      <div className="border-t border-stone-200 bg-white/90 backdrop-blur-md px-4 py-3 flex-shrink-0">
+      <div
+        className="px-4 py-3 flex-shrink-0"
+        style={{
+          backgroundColor: "var(--input-bg)",
+          backdropFilter: "blur(16px)",
+          borderTop: "1px solid var(--border)",
+        }}
+      >
         <form onSubmit={handleSubmit} className="flex items-end gap-2 max-w-3xl mx-auto">
           <div className="flex-1 relative">
             <textarea
@@ -628,24 +885,69 @@ export default function ChatPage() {
               value={displayInput}
               onChange={(e) => { setInput(e.target.value); setInterimText(""); }}
               onKeyDown={handleKeyDown}
-              placeholder={isVoiceMode ? "Listening... speak now 🎤" : "Ask Aaru what to eat..."}
+              placeholder={isVoiceMode ? "Listening… speak now" : "Ask aaru what to eat..."}
               rows={1}
               disabled={isThinking || isTTSSpeaking}
-              className={`w-full resize-none rounded-2xl border px-4 py-3 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent disabled:opacity-50 max-h-32 overflow-y-auto leading-relaxed transition-colors ${
-                interimText ? "bg-amber-50 border-amber-300" : "bg-stone-50 border-stone-200"
-              }`}
+              className="w-full resize-none rounded-2xl px-4 py-3 text-sm leading-relaxed disabled:opacity-50 max-h-32 focus:outline-none transition-all placeholder:opacity-40"
+              style={{
+                backgroundColor: interimText ? "rgba(255,69,0,0.06)" : "var(--surface)",
+                border: `1px solid ${interimText ? "rgba(255,69,0,0.25)" : "var(--border)"}`,
+                color: "var(--text)",
+                boxShadow: "none",
+              }}
+              onFocus={(e) => {
+                if (!interimText) e.currentTarget.style.borderColor = "rgba(255,69,0,0.35)";
+              }}
+              onBlur={(e) => {
+                if (!interimText) e.currentTarget.style.borderColor = "var(--border)";
+              }}
               readOnly={!!interimText}
             />
             {interimText && (
-              <span className="absolute right-3 bottom-3 text-xs text-amber-500 font-medium">speaking...</span>
+              <span className="absolute right-3 bottom-3 text-xs font-medium" style={{ color: "var(--accent)" }}>
+                speaking...
+              </span>
             )}
           </div>
 
+          {/* Mic button — right next to send, thumb-reachable */}
+          <motion.button
+            type="button"
+            onClick={toggleVoiceMode}
+            whileTap={{ scale: 0.93 }}
+            className="mb-1 w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 transition-all"
+            style={isVoiceMode ? {
+              background: "linear-gradient(135deg, #FF4500, #FF7A00)",
+              boxShadow: "0 0 16px rgba(255,69,0,0.45)",
+            } : {
+              backgroundColor: "var(--surface)",
+              border: "1px solid var(--border)",
+            }}
+            title={isVoiceMode ? "Stop voice" : "Voice input"}
+          >
+            {isVoiceMode ? (
+              <motion.span
+                animate={{ scale: [1, 1.25, 1] }}
+                transition={{ repeat: Infinity, duration: 1.2 }}
+                className="text-lg"
+              >
+                🎤
+              </motion.span>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5" style={{ color: "var(--text-muted)" }}>
+                <path d="M8.25 4.5a3.75 3.75 0 1 1 7.5 0v8.25a3.75 3.75 0 1 1-7.5 0V4.5Z" />
+                <path d="M6 10.5a.75.75 0 0 1 .75.75v1.5a5.25 5.25 0 1 0 10.5 0v-1.5a.75.75 0 0 1 1.5 0v1.5a6.751 6.751 0 0 1-6 6.709v2.291h3a.75.75 0 0 1 0 1.5h-7.5a.75.75 0 0 1 0-1.5h3v-2.291a6.751 6.751 0 0 1-6-6.709v-1.5A.75.75 0 0 1 6 10.5Z" />
+              </svg>
+            )}
+          </motion.button>
+
+          {/* Send button */}
           <motion.button
             type="submit"
             disabled={!input.trim() || isThinking || isTTSSpeaking}
             whileTap={{ scale: 0.93 }}
-            className="mb-1 w-11 h-11 rounded-full bg-amber-500 hover:bg-amber-600 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0 shadow-md shadow-amber-200"
+            className="mb-1 w-11 h-11 rounded-full text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 transition-opacity hover:opacity-90"
+            style={{ background: "linear-gradient(135deg, #FF4500, #FF7A00)", boxShadow: "0 4px 12px rgba(255,69,0,0.25)" }}
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
               <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
@@ -654,16 +956,36 @@ export default function ChatPage() {
         </form>
       </div>
 
+      {/* Address picker sheet — shown before OrderConfirmation when user has multiple addresses */}
+      {pendingOrderNoAddr && activeProfile && (
+        <AddressPickerSheet
+          addresses={activeProfile.addresses}
+          onSelect={handleAddressPicked}
+          onCancel={() => setPendingOrderNoAddr(null)}
+        />
+      )}
+
       <OrderConfirmation
         order={pendingOrder}
         onConfirm={handleConfirmOrder}
         onCancel={() => setPendingOrder(null)}
       />
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onSave={(keys) => setUserKeys((prev) => ({ ...prev, ...keys }))}
+      />
+
+      <SetupWizard
+        open={wizardOpen}
+        onClose={(keys) => { setUserKeys(keys); setWizardOpen(false); }}
+        initialStep={trialExhausted ? 1 : 0}
+      />
     </div>
   );
 }
 
-// Inline name input component for the onboarding banner
 function NameInput({ onSave }: { onSave: (name: string) => void }) {
   const [value, setValue] = useState("");
   return (
@@ -676,13 +998,19 @@ function NameInput({ onSave }: { onSave: (name: string) => void }) {
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder="Your name"
-        className="rounded-full border border-amber-300 bg-white px-3 py-1 text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-amber-400 w-28"
+        className="rounded-full px-3 py-1 text-xs focus:outline-none w-28"
+        style={{
+          backgroundColor: "var(--surface)",
+          border: "1px solid rgba(255,69,0,0.25)",
+          color: "var(--text)",
+        }}
         autoFocus
       />
       <button
         type="submit"
         disabled={!value.trim()}
-        className="rounded-full bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white text-xs font-semibold px-3 py-1 transition-colors"
+        className="rounded-full text-white text-xs font-semibold px-3 py-1 disabled:opacity-40 transition-opacity hover:opacity-90"
+        style={{ background: "linear-gradient(135deg, #FF4500, #FF7A00)" }}
       >
         Save
       </button>

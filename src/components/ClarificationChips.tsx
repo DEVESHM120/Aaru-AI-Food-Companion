@@ -15,9 +15,9 @@ export default function ClarificationChips({ question, options, onSelect, disabl
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 4 }}
-      className="px-4 pb-3"
+      className="px-4 pb-3 mt-1"
     >
-      <p className="text-sm text-stone-500 italic mb-2.5">{question}</p>
+      <p className="text-xs italic mb-2.5" style={{ color: "var(--text-muted)" }}>{question}</p>
       <div className="flex flex-wrap gap-2">
         {options.map((option, i) => (
           <motion.button
@@ -28,11 +28,29 @@ export default function ClarificationChips({ question, options, onSelect, disabl
             whileTap={{ scale: 0.95 }}
             disabled={disabled}
             onClick={() => onSelect(option)}
-            className={`px-4 py-2 rounded-full text-sm font-medium border transition-all
-              ${disabled
-                ? "border-stone-200 text-stone-400 cursor-not-allowed"
-                : "border-red-300 text-red-700 bg-white hover:bg-red-50 hover:border-red-400 active:bg-red-100 cursor-pointer"
-              }`}
+            className="px-4 py-2 rounded-full text-sm font-medium border transition-all cursor-pointer"
+            style={disabled ? {
+              borderColor: "var(--border)",
+              color: "var(--text-muted)",
+              opacity: 0.5,
+              cursor: "not-allowed",
+            } : {
+              borderColor: "rgba(255,69,0,0.3)",
+              color: "#FF7A00",
+              backgroundColor: "rgba(255,69,0,0.05)",
+            }}
+            onMouseEnter={(e) => {
+              if (!disabled) {
+                (e.currentTarget as HTMLButtonElement).style.backgroundColor = "rgba(255,69,0,0.12)";
+                (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(255,69,0,0.5)";
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!disabled) {
+                (e.currentTarget as HTMLButtonElement).style.backgroundColor = "rgba(255,69,0,0.05)";
+                (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(255,69,0,0.3)";
+              }
+            }}
           >
             {option}
           </motion.button>

@@ -10,9 +10,9 @@ interface OrderConfirmationProps {
   onCancel: () => void;
 }
 
-const platformConfig = {
-  zomato: { color: "text-red-600", bg: "bg-red-50", border: "border-red-200", btn: "bg-red-500 hover:bg-red-600", progress: "bg-red-400" },
-  swiggy: { color: "text-orange-600", bg: "bg-orange-50", border: "border-orange-200", btn: "bg-orange-500 hover:bg-orange-600", progress: "bg-orange-400" },
+const platformBadge = {
+  zomato: { bg: "#E23744", label: "Zomato" },
+  swiggy: { bg: "#FC8019", label: "Swiggy" },
 };
 
 const AUTO_CONFIRM_SECONDS = 5;
@@ -51,80 +51,99 @@ export default function OrderConfirmation({ order, onConfirm, onCancel }: OrderC
     <AnimatePresence>
       {order && (
         <>
+          {/* Backdrop */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/20 backdrop-blur-sm z-40"
+            className="fixed inset-0 z-40"
+            style={{ backgroundColor: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)" }}
             onClick={onCancel}
           />
 
+          {/* Modal */}
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
             transition={{ type: "spring", stiffness: 300, damping: 25 }}
-            className="fixed inset-x-4 bottom-8 sm:inset-auto sm:left-1/2 sm:-translate-x-1/2 sm:bottom-8 sm:w-96 bg-white rounded-3xl shadow-2xl z-50 overflow-hidden"
+            className="fixed inset-x-4 bottom-8 sm:inset-auto sm:left-1/2 sm:-translate-x-1/2 sm:bottom-8 sm:w-96 rounded-3xl z-50 overflow-hidden"
+            style={{
+              backgroundColor: "var(--surface-2)",
+              border: "1px solid var(--border)",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+            }}
           >
             {/* Auto-confirm progress bar */}
             {order.autonomous && (
               <motion.div
-                className={`h-1 ${platformConfig[order.platform].progress}`}
+                className="h-0.5"
                 initial={{ width: "100%" }}
                 animate={{ width: "0%" }}
                 transition={{ duration: AUTO_CONFIRM_SECONDS, ease: "linear" }}
+                style={{ background: "linear-gradient(135deg, #FF4500, #FF7A00)" }}
               />
             )}
 
-            <div className={`${platformConfig[order.platform].bg} ${platformConfig[order.platform].border} border-b px-6 py-4`}>
+            {/* Header */}
+            <div className="px-5 pt-5 pb-4" style={{ borderBottom: "1px solid var(--border)" }}>
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider">
+                  <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>
                     {order.autonomous ? "Auto-ordering in..." : "Confirm Order"}
                   </p>
-                  <h2 className="text-lg font-bold text-stone-900 mt-0.5">{order.restaurant.name}</h2>
-                  <p className={`text-sm font-medium capitalize ${platformConfig[order.platform].color}`}>
-                    via {order.platform}
-                  </p>
+                  <h2 className="text-base font-bold" style={{ color: "var(--text)" }}>{order.restaurant.name}</h2>
+                  <span
+                    className="inline-block text-xs font-semibold text-white px-2 py-0.5 rounded-full mt-1"
+                    style={{ backgroundColor: platformBadge[order.platform].bg }}
+                  >
+                    via {platformBadge[order.platform].label}
+                  </span>
                 </div>
                 {order.autonomous && (
                   <motion.div
                     key={countdown}
                     initial={{ scale: 1.3, opacity: 0.5 }}
                     animate={{ scale: 1, opacity: 1 }}
-                    className="w-12 h-12 rounded-full bg-white border-2 border-stone-200 flex items-center justify-center"
+                    className="w-12 h-12 rounded-full flex items-center justify-center"
+                    style={{ backgroundColor: "var(--surface)", border: "2px solid var(--border)" }}
                   >
-                    <span className="text-xl font-bold text-stone-700">{countdown}</span>
+                    <span className="text-xl font-bold" style={{ color: "var(--text)" }}>{countdown}</span>
                   </motion.div>
                 )}
               </div>
             </div>
 
-            <div className="px-6 py-4 space-y-3">
-              <div className="flex justify-between text-sm">
-                <span className="text-stone-500">Item</span>
-                <span className="font-medium text-stone-900">{order.item}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-stone-500">Amount</span>
-                <span className="font-semibold text-stone-900">₹{order.price}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-stone-500">Delivery in</span>
-                <span className="font-medium text-stone-900">~{order.estimatedDelivery} min</span>
-              </div>
+            {/* Details */}
+            <div className="px-5 py-4 space-y-3">
+              <Row label="Item" value={order.item} />
+              <Row label="Amount" value={`₹${order.price}`} bold />
+              <Row label="Delivery in" value={`~${order.estimatedDelivery} min`} />
+              {order.deliveryAddress ? (
+                <Row
+                  label="Deliver to"
+                  value={`${order.deliveryAddress.label} — ${shortLocation(order.deliveryAddress.locationName)}`}
+                />
+              ) : (
+                <Row label="Deliver to" value="Default address" muted />
+              )}
             </div>
 
-            <div className="px-6 pb-6 flex gap-3">
+            {/* Actions */}
+            <div className="px-5 pb-5 flex gap-3">
               <button
                 onClick={onCancel}
-                className="flex-1 py-3 rounded-2xl border border-stone-200 text-stone-600 font-semibold text-sm hover:bg-stone-50 transition-colors"
+                className="flex-1 py-3 rounded-2xl text-sm font-semibold transition-all"
+                style={{ border: "1px solid var(--border)", color: "var(--text-muted)" }}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "rgba(255,69,0,0.3)")}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
               >
                 {order.autonomous ? "Stop ✋" : "Cancel"}
               </button>
               <button
                 onClick={onConfirm}
-                className={`flex-1 py-3 rounded-2xl text-white font-semibold text-sm transition-colors ${platformConfig[order.platform].btn}`}
+                className="flex-1 py-3 rounded-2xl text-white text-sm font-semibold transition-opacity hover:opacity-90"
+                style={{ background: "linear-gradient(135deg, #FF4500, #FF7A00)" }}
               >
                 {order.autonomous ? "Order Now 🚀" : "Place Order 🎉"}
               </button>
@@ -134,4 +153,23 @@ export default function OrderConfirmation({ order, onConfirm, onCancel }: OrderC
       )}
     </AnimatePresence>
   );
+}
+
+function Row({ label, value, bold, muted }: { label: string; value: string; bold?: boolean; muted?: boolean }) {
+  return (
+    <div className="flex justify-between text-sm" style={{ borderBottom: "1px solid var(--border)", paddingBottom: "10px" }}>
+      <span style={{ color: "var(--text-muted)" }}>{label}</span>
+      <span
+        className={bold ? "font-bold" : "font-medium"}
+        style={{ color: muted ? "var(--text-muted)" : "var(--text)" }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function shortLocation(locationName: string): string {
+  const parts = locationName.split(",");
+  return parts.slice(0, 2).join(",").trim();
 }

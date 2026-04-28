@@ -16,46 +16,41 @@ export default function ChatMessages({ messages }: ChatMessagesProps) {
   }, [messages]);
 
   return (
-    <div className="flex flex-col gap-4 py-4">
+    <div className="flex flex-col gap-3 py-4">
       <AnimatePresence initial={false}>
         {messages.map((msg) => (
           <motion.div
             key={msg.id}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25 }}
-            className={`flex items-start gap-3 px-4 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
+            transition={{ duration: 0.22 }}
+            className={`flex items-end gap-2 px-4 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
           >
-            {/* Avatar */}
-            {msg.role === "assistant" && (
-              <div className="w-8 h-8 rounded-full bg-amber-100 border border-amber-200 flex items-center justify-center text-sm flex-shrink-0 mt-0.5">
-                🍽️
-              </div>
-            )}
-
             {/* Bubble */}
             <div
-              className={`max-w-[78%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${
-                msg.role === "user"
-                  ? "bg-amber-100 border border-amber-200 text-stone-900 rounded-tr-sm"
-                  : "bg-stone-100 border border-stone-200 text-stone-800 rounded-tl-sm"
+              className={`max-w-[80%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                msg.role === "user" ? "rounded-br-sm" : "rounded-bl-sm"
               }`}
+              style={{
+                backgroundColor: msg.role === "user" ? "var(--bubble-user-bg)" : "var(--bubble-ai-bg)",
+                border: `1px solid ${msg.role === "user" ? "var(--bubble-user-border)" : "var(--bubble-ai-border)"}`,
+                color: "var(--text)",
+              }}
             >
               {/* Voice indicator */}
               {msg.role === "user" && msg.inputMode === "voice" && (
-                <span className="inline-flex items-center gap-1 text-xs text-amber-600 font-medium mb-1 block">
+                <span className="flex items-center gap-1 text-xs font-medium mb-1" style={{ color: "var(--accent)" }}>
                   🎤 Voice
+                </span>
+              )}
+              {/* AI label */}
+              {msg.role === "assistant" && (
+                <span className="block text-xs font-semibold mb-1 tracking-wide" style={{ color: "var(--accent)" }}>
+                  aaru
                 </span>
               )}
               {msg.content}
             </div>
-
-            {/* User avatar placeholder */}
-            {msg.role === "user" && (
-              <div className="w-8 h-8 rounded-full bg-stone-200 flex items-center justify-center text-sm flex-shrink-0 mt-0.5">
-                👤
-              </div>
-            )}
           </motion.div>
         ))}
       </AnimatePresence>

@@ -1,15 +1,42 @@
 @import "tailwindcss";
 
+/* ── Light theme (default) ───────────────────────────── */
 :root {
   --bg: #FAFAF9;
-  --fg: #1C1917;
-  --fg-muted: #78716C;
-  --accent: #D97706;
-  --accent-light: #FEF3C7;
+  --surface: #FFFFFF;
+  --surface-2: #F5F4F2;
   --border: #E7E5E4;
-  --bubble-ai: #F5F5F4;
-  --bubble-user: #FEF3C7;
-  --card: #FFFFFF;
+  --text: #1C1917;
+  --text-muted: #78716C;
+  --header-bg: rgba(250, 250, 249, 0.88);
+  --input-bg: rgba(255, 255, 255, 0.92);
+  --bubble-user-bg: rgba(255, 69, 0, 0.07);
+  --bubble-user-border: rgba(255, 69, 0, 0.14);
+  --bubble-ai-bg: #F5F5F4;
+  --bubble-ai-border: #E7E5E4;
+
+  /* Brand — same in both themes */
+  --accent: #FF4500;
+  --accent-2: #FF7A00;
+  --success: #22C55E;
+  --zomato: #E23744;
+  --swiggy: #FC8019;
+}
+
+/* ── Dark theme ──────────────────────────────────────── */
+[data-theme="dark"] {
+  --bg: #0C0A09;
+  --surface: #171210;
+  --surface-2: #211D1A;
+  --border: #2E2924;
+  --text: #F2EDE8;
+  --text-muted: #7C756F;
+  --header-bg: rgba(12, 10, 9, 0.88);
+  --input-bg: rgba(23, 18, 16, 0.92);
+  --bubble-user-bg: rgba(255, 69, 0, 0.1);
+  --bubble-user-border: rgba(255, 69, 0, 0.2);
+  --bubble-ai-bg: #171210;
+  --bubble-ai-border: #2E2924;
 }
 
 * {
@@ -18,21 +45,18 @@
 
 body {
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Scrollbar */
-::-webkit-scrollbar {
-  width: 4px;
+/* Hide scrollbars globally */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 2px;
+*::-webkit-scrollbar {
+  display: none;
 }
 
 /* Thinking dots */
@@ -47,8 +71,8 @@ body {
 
 /* Mic pulse */
 @keyframes mic-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.4); }
-  50% { box-shadow: 0 0 0 12px rgba(217, 119, 6, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 69, 0, 0.4); }
+  50% { box-shadow: 0 0 0 12px rgba(255, 69, 0, 0); }
 }
 
 .mic-active {

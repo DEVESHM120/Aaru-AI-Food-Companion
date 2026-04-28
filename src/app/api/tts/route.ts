@@ -1,17 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const VOICE_ID =
-  process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // Rachel
+const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
 
 export async function POST(req: NextRequest) {
-  const { text } = await req.json();
+  const { text, elevenLabsKey } = await req.json();
 
   if (!text) {
     return NextResponse.json({ error: "No text provided" }, { status: 400 });
   }
 
-  if (!ELEVENLABS_API_KEY) {
+  const apiKey = elevenLabsKey || process.env.ELEVENLABS_API_KEY;
+
+  if (!apiKey) {
     return NextResponse.json(
       { error: "ElevenLabs not configured" },
       { status: 503 }
@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
       {
         method: "POST",
         headers: {
-          "xi-api-key": ELEVENLABS_API_KEY,
+          "xi-api-key": apiKey,
           "Content-Type": "application/json",
           Accept: "audio/mpeg",
         },

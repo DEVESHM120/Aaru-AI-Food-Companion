@@ -37,6 +37,24 @@ export function addPastOrder(profileId: string, order: PastOrder): void {
   saveProfile(profile);
 }
 
+export function addMemory(profileId: string, fact: string): void {
+  const profiles = getAllProfiles();
+  const profile = profiles.find((p) => p.id === profileId);
+  if (!profile) return;
+  const existing = profile.memories ?? [];
+  if (existing.some((m) => m.toLowerCase() === fact.toLowerCase())) return;
+  profile.memories = [fact, ...existing].slice(0, 30);
+  saveProfile(profile);
+}
+
+export function setMemories(profileId: string, memories: string[]): void {
+  const profiles = getAllProfiles();
+  const profile = profiles.find((p) => p.id === profileId);
+  if (!profile) return;
+  profile.memories = memories.slice(0, 30);
+  saveProfile(profile);
+}
+
 export function newProfileId(): string {
   return `person_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }

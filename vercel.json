@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "src/app/api/chat/route.ts": { "maxDuration": 60 },
+    "src/app/api/tts/route.ts": { "maxDuration": 30 },
+    "src/app/api/addresses/route.ts": { "maxDuration": 30 },
+    "src/app/api/user/route.ts": { "maxDuration": 30 },
+    "src/app/api/orders/route.ts": { "maxDuration": 30 },
+    "src/app/api/swiggy-orders/route.ts": { "maxDuration": 30 },
+    "src/app/api/contacts/route.ts": { "maxDuration": 30 },
+    "src/app/api/extract-memory/route.ts": { "maxDuration": 15 },
+    "src/app/api/memories/route.ts": { "maxDuration": 10 }
+  }
+}

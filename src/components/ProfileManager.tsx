@@ -8,7 +8,7 @@ import { PastOrder } from "@/lib/profiles/types";
 
 interface ProfileManagerProps {
   activeProfile: PersonProfile | null;
-  profiles: PersonProfile[];  // BUG-001 fix: parent-controlled, no local state divergence
+  profiles: PersonProfile[];
   preloadedAddresses?: { address_id: string; location_name: string }[];
   onProfileChange: (profile: PersonProfile) => void;
   onAllProfilesChange: (profiles: PersonProfile[]) => void;
@@ -37,7 +37,6 @@ export default function ProfileManager({
   onProfileChange,
   onAllProfilesChange,
 }: ProfileManagerProps) {
-  // BUG-001 fix: allProfiles comes from parent prop — no local state that can diverge
   const [availableAddresses, setAvailableAddresses] = useState<{ address_id: string; location_name: string }[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<PersonProfile | null>(null);
@@ -45,18 +44,16 @@ export default function ProfileManager({
   const [pastOrders, setPastOrders] = useState<PastOrder[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(false);
 
-  // BUG-004 fix: sync from preloadedAddresses prop when it arrives (parent fetches async)
   useEffect(() => {
     if (preloadedAddresses && preloadedAddresses.length > 0) {
       setAvailableAddresses(preloadedAddresses);
     }
   }, [preloadedAddresses]);
 
-  // Only self-fetch if parent didn't provide addresses after a short wait
   useEffect(() => {
     const timer = setTimeout(() => {
       setAvailableAddresses((cur) => {
-        if (cur.length > 0) return cur; // already have them from parent
+        if (cur.length > 0) return cur;
         fetch("/api/addresses")
           .then((r) => r.json())
           .then((data) => { if (data.length > 0) setAvailableAddresses(data); })
@@ -108,7 +105,7 @@ export default function ProfileManager({
   function persistProfile(p: PersonProfile) {
     saveProfile(p);
     const updated = getAllProfiles();
-    onAllProfilesChange(updated);  // BUG-006 fix: single update path, parent owns allProfiles state
+    onAllProfilesChange(updated);
     onProfileChange(p);
     setEditingProfile(null);
   }
@@ -148,17 +145,26 @@ export default function ProfileManager({
     );
   }
 
+  const inputStyle = {
+    backgroundColor: "var(--surface-2)",
+    border: "1px solid var(--border)",
+    color: "var(--text)",
+  };
+
+  const pillBase = "flex-1 py-2 rounded-xl text-sm font-medium transition-colors";
+
   return (
     <>
       {/* Trigger button */}
       <div className="relative">
         <button
           onClick={() => setIsOpen(!isOpen)}
-          className="flex items-center gap-1.5 text-xs font-medium text-stone-600 hover:text-stone-900 bg-stone-100 hover:bg-stone-200 px-3 py-1.5 rounded-full transition-colors"
+          className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full transition-colors"
+          style={{ backgroundColor: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text)" }}
         >
           <span>👤</span>
           <span>{activeProfile ? activeProfile.name : "Add Person"}</span>
-          <span className="text-stone-400">▾</span>
+          <span style={{ color: "var(--text-muted)" }}>▾</span>
         </button>
 
         <AnimatePresence>
@@ -167,20 +173,26 @@ export default function ProfileManager({
               initial={{ opacity: 0, y: -4, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -4, scale: 0.97 }}
-              className="absolute top-9 left-0 w-72 bg-white border border-stone-200 rounded-2xl shadow-xl z-50 overflow-hidden"
+              className="absolute top-9 left-0 w-72 rounded-2xl z-50 overflow-hidden"
+              style={{
+                backgroundColor: "var(--surface)",
+                border: "1px solid var(--border)",
+                boxShadow: "0 16px 40px rgba(0,0,0,0.35)",
+              }}
             >
-              <div className="p-3 border-b border-stone-100 flex items-center justify-between">
-                <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider">People</p>
+              <div className="p-3 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
+                <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>People</p>
                 <button
                   onClick={openNew}
-                  className="text-xs text-amber-600 font-semibold hover:text-amber-700"
+                  className="text-xs font-semibold transition-opacity hover:opacity-70"
+                  style={{ color: "var(--accent-2)" }}
                 >
                   + Add person
                 </button>
               </div>
 
               {profiles.length === 0 ? (
-                <div className="p-4 text-sm text-stone-400 text-center">
+                <div className="p-4 text-sm text-center" style={{ color: "var(--text-muted)" }}>
                   No profiles yet.<br />Add a person to get started.
                 </div>
               ) : (
@@ -188,21 +200,26 @@ export default function ProfileManager({
                   {profiles.map((p) => (
                     <div
                       key={p.id}
-                      className={`flex items-center justify-between px-4 py-3 border-b border-stone-50 last:border-0 ${activeProfile?.id === p.id ? "bg-amber-50" : "hover:bg-stone-50"}`}
+                      className="flex items-center justify-between px-4 py-3 last:border-0"
+                      style={{
+                        borderBottom: "1px solid var(--border)",
+                        backgroundColor: activeProfile?.id === p.id ? "rgba(255,69,0,0.06)" : "transparent",
+                      }}
                     >
                       <button
                         onClick={() => { onProfileChange(p); setIsOpen(false); }}
                         className="flex-1 text-left"
                       >
-                        <p className="text-sm font-semibold text-stone-800">{p.name}</p>
-                        <p className="text-xs text-stone-400 mt-0.5">
+                        <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>{p.name}</p>
+                        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
                           {p.addresses.map((a) => a.label).join(", ") || "No address"}
                           {" · "}{p.preferences.diet}
                         </p>
                       </button>
                       <button
                         onClick={() => openEdit(p)}
-                        className="text-xs text-stone-400 hover:text-amber-600 px-2 py-1"
+                        className="text-xs px-2 py-1 transition-opacity hover:opacity-70"
+                        style={{ color: "var(--text-muted)" }}
                       >
                         Edit
                       </button>
@@ -223,29 +240,36 @@ export default function ProfileManager({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50"
+              className="fixed inset-0 z-50"
+              style={{ backgroundColor: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)" }}
               onClick={() => setEditingProfile(null)}
             />
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.96 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 20, scale: 0.96 }}
-              className="fixed inset-x-4 bottom-4 sm:inset-auto sm:left-1/2 sm:-translate-x-1/2 sm:w-[460px] sm:bottom-8 bg-white rounded-3xl shadow-2xl z-50 overflow-hidden max-h-[90vh] overflow-y-auto"
+              className="fixed inset-x-4 bottom-4 sm:inset-auto sm:left-1/2 sm:-translate-x-1/2 sm:w-[460px] sm:bottom-8 rounded-3xl z-50 overflow-hidden max-h-[90vh] overflow-y-auto"
+              style={{
+                backgroundColor: "var(--surface)",
+                border: "1px solid var(--border)",
+                boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+              }}
             >
               {/* Header */}
-              <div className="p-5 border-b border-stone-100 flex items-center justify-between">
+              <div className="p-5 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
                 <div>
-                  <h2 className="font-bold text-stone-900">
+                  <h2 className="font-bold" style={{ color: "var(--text)" }}>
                     {isAddingNew ? "New person" : `Edit ${editingProfile.name}`}
                   </h2>
-                  <p className="text-xs text-stone-400 mt-0.5">
+                  <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
                     {isAddingNew ? "Set name, address and preferences" : "Update preferences and details"}
                   </p>
                 </div>
                 {!isAddingNew && (
                   <button
                     onClick={() => handleDelete(editingProfile.id)}
-                    className="text-xs text-red-400 hover:text-red-600 px-2 py-1"
+                    className="text-xs px-2 py-1 transition-opacity hover:opacity-70"
+                    style={{ color: "#EF4444" }}
                   >
                     Delete
                   </button>
@@ -255,21 +279,24 @@ export default function ProfileManager({
               <div className="p-5 space-y-5">
                 {/* Name */}
                 <div>
-                  <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider mb-2">Name</p>
+                  <SectionLabel>Name</SectionLabel>
                   <input
                     type="text"
                     value={editingProfile.name}
                     onChange={(e) => setEditingProfile({ ...editingProfile, name: e.target.value })}
                     placeholder="e.g. Devesh, Divya, Mom..."
-                    className="w-full rounded-xl border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent"
+                    className="w-full rounded-xl px-4 py-2.5 text-sm placeholder:opacity-40 focus:outline-none"
+                    style={{ ...inputStyle, outline: "none" }}
+                    onFocus={(e) => (e.currentTarget.style.boxShadow = "0 0 0 2px rgba(255,69,0,0.3)")}
+                    onBlur={(e) => (e.currentTarget.style.boxShadow = "none")}
                   />
                 </div>
 
                 {/* Addresses */}
                 <div>
-                  <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider mb-2">Delivery Addresses</p>
+                  <SectionLabel>Delivery Addresses</SectionLabel>
                   {availableAddresses.length === 0 ? (
-                    <p className="text-xs text-stone-400">No Zomato addresses found. Connect Zomato MCP to load.</p>
+                    <p className="text-xs" style={{ color: "var(--text-muted)" }}>No Zomato addresses found. Connect Zomato MCP to load.</p>
                   ) : (
                     <div className="space-y-2">
                       {availableAddresses.map((addr) => {
@@ -283,16 +310,20 @@ export default function ProfileManager({
                                   addresses: toggleAddress(editingProfile, addr),
                                 })
                               }
-                              className={`mt-0.5 w-5 h-5 rounded flex-shrink-0 border-2 flex items-center justify-center transition-colors ${
-                                linked
-                                  ? "bg-amber-500 border-amber-500 text-white"
-                                  : "border-stone-300 bg-white"
-                              }`}
+                              className="mt-0.5 w-5 h-5 rounded flex-shrink-0 flex items-center justify-center transition-all text-xs"
+                              style={linked ? {
+                                backgroundColor: "var(--accent)",
+                                border: "2px solid var(--accent)",
+                                color: "white",
+                              } : {
+                                backgroundColor: "var(--surface-2)",
+                                border: "2px solid var(--border)",
+                              }}
                             >
-                              {linked && <span className="text-xs">✓</span>}
+                              {linked && "✓"}
                             </button>
                             <div className="flex-1 min-w-0">
-                              <p className="text-xs text-stone-600 truncate">{addr.location_name}</p>
+                              <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>{addr.location_name}</p>
                               {linked && (
                                 <input
                                   type="text"
@@ -304,7 +335,12 @@ export default function ProfileManager({
                                     })
                                   }
                                   placeholder="Label (Home, Office...)"
-                                  className="mt-1 w-full text-xs rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                                  className="mt-1 w-full text-xs rounded-lg px-2 py-1 focus:outline-none"
+                                  style={{
+                                    backgroundColor: "rgba(255,69,0,0.07)",
+                                    border: "1px solid rgba(255,69,0,0.25)",
+                                    color: "var(--text)",
+                                  }}
                                 />
                               )}
                             </div>
@@ -313,20 +349,23 @@ export default function ProfileManager({
                       })}
                     </div>
                   )}
-                  {/* Default address selector */}
                   {editingProfile.addresses.length > 1 && (
                     <div className="mt-3">
-                      <p className="text-xs text-stone-500 mb-1">Default delivery address</p>
+                      <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>Default delivery address</p>
                       <div className="flex gap-2 flex-wrap">
                         {editingProfile.addresses.map((a) => (
                           <button
                             key={a.addressId}
                             onClick={() => setEditingProfile({ ...editingProfile, defaultAddressId: a.addressId })}
-                            className={`px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
-                              editingProfile.defaultAddressId === a.addressId
-                                ? "bg-amber-500 text-white"
-                                : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                            }`}
+                            className="px-2 py-1 rounded-lg text-xs font-medium transition-all"
+                            style={editingProfile.defaultAddressId === a.addressId ? {
+                              background: "linear-gradient(135deg, #FF4500, #FF7A00)",
+                              color: "white",
+                            } : {
+                              backgroundColor: "var(--surface-2)",
+                              color: "var(--text-muted)",
+                              border: "1px solid var(--border)",
+                            }}
                           >
                             {a.label}
                           </button>
@@ -338,7 +377,7 @@ export default function ProfileManager({
 
                 {/* Diet */}
                 <div>
-                  <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider mb-2">Diet</p>
+                  <SectionLabel>Diet</SectionLabel>
                   <div className="flex gap-2">
                     {DIET_OPTIONS.map((d) => (
                       <button
@@ -349,11 +388,15 @@ export default function ProfileManager({
                             preferences: { ...editingProfile.preferences, diet: d },
                           })
                         }
-                        className={`flex-1 py-2 rounded-xl text-sm font-medium transition-colors ${
-                          editingProfile.preferences.diet === d
-                            ? "bg-amber-500 text-white"
-                            : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                        }`}
+                        className={pillBase}
+                        style={editingProfile.preferences.diet === d ? {
+                          background: "linear-gradient(135deg, #FF4500, #FF7A00)",
+                          color: "white",
+                        } : {
+                          backgroundColor: "var(--surface-2)",
+                          color: "var(--text-muted)",
+                          border: "1px solid var(--border)",
+                        }}
                       >
                         {d === "veg" ? "🥗 Veg" : d === "nonveg" ? "🍖 Non-veg" : "🍽️ Both"}
                       </button>
@@ -363,7 +406,7 @@ export default function ProfileManager({
 
                 {/* Budget */}
                 <div>
-                  <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider mb-2">Budget</p>
+                  <SectionLabel>Budget</SectionLabel>
                   <div className="flex gap-2">
                     {PRICE_OPTIONS.map((p) => (
                       <button
@@ -374,11 +417,15 @@ export default function ProfileManager({
                             preferences: { ...editingProfile.preferences, priceRange: p },
                           })
                         }
-                        className={`flex-1 py-2 rounded-xl text-sm font-medium transition-colors ${
-                          editingProfile.preferences.priceRange === p
-                            ? "bg-amber-500 text-white"
-                            : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                        }`}
+                        className={pillBase}
+                        style={editingProfile.preferences.priceRange === p ? {
+                          background: "linear-gradient(135deg, #FF4500, #FF7A00)",
+                          color: "white",
+                        } : {
+                          backgroundColor: "var(--surface-2)",
+                          color: "var(--text-muted)",
+                          border: "1px solid var(--border)",
+                        }}
                       >
                         {p === "budget" ? "💰 Budget" : p === "mid" ? "🍴 Mid" : "💎 Premium"}
                       </button>
@@ -388,7 +435,7 @@ export default function ProfileManager({
 
                 {/* Likes */}
                 <div>
-                  <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider mb-2">Likes</p>
+                  <SectionLabel>Likes</SectionLabel>
                   <div className="flex flex-wrap gap-2">
                     {LIKE_CHIPS.map((chip) => (
                       <button
@@ -402,11 +449,16 @@ export default function ProfileManager({
                             },
                           })
                         }
-                        className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-                          editingProfile.preferences.likes.includes(chip)
-                            ? "bg-amber-100 text-amber-700 border border-amber-300"
-                            : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                        }`}
+                        className="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
+                        style={editingProfile.preferences.likes.includes(chip) ? {
+                          backgroundColor: "rgba(255,69,0,0.12)",
+                          border: "1px solid rgba(255,69,0,0.3)",
+                          color: "#FF7A00",
+                        } : {
+                          backgroundColor: "var(--surface-2)",
+                          color: "var(--text-muted)",
+                          border: "1px solid var(--border)",
+                        }}
                       >
                         {chip}
                       </button>
@@ -416,7 +468,7 @@ export default function ProfileManager({
 
                 {/* Dislikes */}
                 <div>
-                  <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider mb-2">Dislikes</p>
+                  <SectionLabel>Dislikes</SectionLabel>
                   <div className="flex flex-wrap gap-2">
                     {DISLIKE_CHIPS.map((chip) => (
                       <button
@@ -430,11 +482,16 @@ export default function ProfileManager({
                             },
                           })
                         }
-                        className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-                          editingProfile.preferences.dislikes.includes(chip)
-                            ? "bg-red-100 text-red-700 border border-red-200"
-                            : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                        }`}
+                        className="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
+                        style={editingProfile.preferences.dislikes.includes(chip) ? {
+                          backgroundColor: "rgba(239,68,68,0.12)",
+                          border: "1px solid rgba(239,68,68,0.3)",
+                          color: "#EF4444",
+                        } : {
+                          backgroundColor: "var(--surface-2)",
+                          color: "var(--text-muted)",
+                          border: "1px solid var(--border)",
+                        }}
                       >
                         {chip}
                       </button>
@@ -444,9 +501,7 @@ export default function ProfileManager({
 
                 {/* Notes */}
                 <div>
-                  <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider mb-2">
-                    Notes for Aaru
-                  </p>
+                  <SectionLabel>Notes for Aaru</SectionLabel>
                   <textarea
                     value={editingProfile.preferences.notes}
                     onChange={(e) =>
@@ -455,39 +510,49 @@ export default function ProfileManager({
                         preferences: { ...editingProfile.preferences, notes: e.target.value },
                       })
                     }
-                    placeholder={`e.g. "Doesn't like sweets in periods", "Lactose intolerant", "Always orders extra spicy"`}
+                    placeholder={`e.g. "Doesn't like sweets in periods", "Lactose intolerant"`}
                     rows={2}
-                    className="w-full rounded-xl border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent resize-none"
+                    className="w-full rounded-xl px-4 py-2.5 text-sm placeholder:opacity-40 focus:outline-none resize-none"
+                    style={inputStyle}
+                    onFocus={(e) => (e.currentTarget.style.boxShadow = "0 0 0 2px rgba(255,69,0,0.3)")}
+                    onBlur={(e) => (e.currentTarget.style.boxShadow = "none")}
                   />
-                  <p className="text-xs text-stone-400 mt-1">Aaru remembers this when ordering for {editingProfile.name || "this person"}</p>
+                  <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+                    Aaru remembers this when ordering for {editingProfile.name || "this person"}
+                  </p>
                 </div>
 
                 {/* Past orders */}
                 {!isAddingNew && (
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Recent Orders</p>
+                      <SectionLabel>Recent Orders</SectionLabel>
                       <button
                         onClick={syncOrdersToProfile}
                         disabled={loadingOrders}
-                        className="text-xs text-amber-600 hover:text-amber-700 disabled:opacity-40"
+                        className="text-xs disabled:opacity-40 transition-opacity hover:opacity-70"
+                        style={{ color: "#FF7A00" }}
                       >
                         {loadingOrders ? "Syncing..." : "Sync from Zomato ↻"}
                       </button>
                     </div>
                     {loadingOrders ? (
-                      <p className="text-xs text-stone-400 animate-pulse">Fetching from Zomato...</p>
+                      <p className="text-xs animate-pulse" style={{ color: "var(--text-muted)" }}>Fetching from Zomato...</p>
                     ) : (editingProfile.pastOrders.length > 0 || pastOrders.length > 0) ? (
                       <div className="space-y-1.5">
                         {(editingProfile.pastOrders.length > 0 ? editingProfile.pastOrders : pastOrders).slice(0, 5).map((o, i) => (
-                          <div key={i} className="flex justify-between text-xs text-stone-600 bg-stone-50 rounded-lg px-3 py-2">
-                            <span>{o.itemName} — <span className="text-stone-400">{o.restaurantName}</span></span>
-                            <span className="text-stone-400">₹{o.price}</span>
+                          <div
+                            key={i}
+                            className="flex justify-between text-xs px-3 py-2 rounded-lg"
+                            style={{ backgroundColor: "var(--surface-2)" }}
+                          >
+                            <span style={{ color: "var(--text)" }}>{o.itemName} — <span style={{ color: "var(--text-muted)" }}>{o.restaurantName}</span></span>
+                            <span style={{ color: "var(--text-muted)" }}>₹{o.price}</span>
                           </div>
                         ))}
                       </div>
                     ) : (
-                      <p className="text-xs text-stone-400">No orders synced yet. Tap "Sync from Zomato" above.</p>
+                      <p className="text-xs" style={{ color: "var(--text-muted)" }}>No orders synced yet. Tap "Sync from Zomato" above.</p>
                     )}
                   </div>
                 )}
@@ -497,7 +562,8 @@ export default function ProfileManager({
               <div className="p-5 pt-0 flex gap-3">
                 <button
                   onClick={() => setEditingProfile(null)}
-                  className="flex-1 py-3 rounded-2xl border border-stone-200 text-stone-600 font-semibold text-sm"
+                  className="flex-1 py-3 rounded-2xl text-sm font-semibold transition-all"
+                  style={{ border: "1px solid var(--border)", color: "var(--text-muted)" }}
                 >
                   Cancel
                 </button>
@@ -507,7 +573,8 @@ export default function ProfileManager({
                     persistProfile(editingProfile);
                   }}
                   disabled={!editingProfile.name.trim()}
-                  className="flex-1 py-3 rounded-2xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white font-semibold text-sm transition-colors"
+                  className="flex-1 py-3 rounded-2xl text-white text-sm font-semibold disabled:opacity-40 transition-opacity hover:opacity-90"
+                  style={{ background: "linear-gradient(135deg, #FF4500, #FF7A00)" }}
                 >
                   Save
                 </button>
@@ -517,6 +584,14 @@ export default function ProfileManager({
         )}
       </AnimatePresence>
     </>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>
+      {children}
+    </p>
   );
 }
 

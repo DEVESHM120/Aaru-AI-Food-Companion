@@ -26,4 +26,5 @@ export interface PersonProfile {
     notes: string; // free text: "doesn't like sweet in periods", "lactose intolerant"
   };
   pastOrders: PastOrder[];
+  memories?: string[]; // learned facts from conversations, newest first, max 30
 }

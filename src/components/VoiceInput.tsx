@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
 
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
@@ -29,47 +29,51 @@ declare global {
   }
 }
 
+export interface VoiceInputHandle {
+  startListening: () => void;
+  stopListening: () => void;
+}
+
 interface VoiceInputProps {
   isVoiceMode: boolean;
   isSpeaking: boolean;
   onInterimTranscript: (text: string) => void;
   onFinalTranscript: (text: string) => void;
   onListeningChange: (listening: boolean) => void;
+  onError?: (message: string) => void;
 }
 
 const SILENCE_AFTER_FINAL_MS = 900;
 const SILENCE_AFTER_SPEECH_END_MS = 600;
-// How long after TTS ends to wait before starting recognition (prevents echo)
 const TTS_ECHO_COOLDOWN_MS = 1200;
 
-export default function VoiceInput({
-  isVoiceMode,
-  isSpeaking,
-  onInterimTranscript,
-  onFinalTranscript,
-  onListeningChange,
-}: VoiceInputProps) {
+// Detect iOS (Safari and Chrome on iOS both use WebKit)
+const isIOS = typeof navigator !== "undefined" && /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+const VoiceInput = forwardRef<VoiceInputHandle, VoiceInputProps>(function VoiceInput(
+  { isVoiceMode, isSpeaking, onInterimTranscript, onFinalTranscript, onListeningChange, onError },
+  ref
+) {
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accumulatedRef = useRef("");
   const isRunningRef = useRef(false);
   const speechEndedRef = useRef(false);
 
-  // Callback refs — always point to latest props, never stale in closures
   const onFinalRef = useRef(onFinalTranscript);
   const onInterimRef = useRef(onInterimTranscript);
   const onListeningRef = useRef(onListeningChange);
+  const onErrorRef = useRef(onError);
 
   useEffect(() => { onFinalRef.current = onFinalTranscript; }, [onFinalTranscript]);
   useEffect(() => { onInterimRef.current = onInterimTranscript; }, [onInterimTranscript]);
   useEffect(() => { onListeningRef.current = onListeningChange; }, [onListeningChange]);
+  useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
-  // BUG-003 fix: keep current isVoiceMode / isSpeaking in refs so onend never reads stale closure values
   const isVoiceModeRef = useRef(isVoiceMode);
   const isSpeakingRef = useRef(isSpeaking);
   useEffect(() => { isVoiceModeRef.current = isVoiceMode; }, [isVoiceMode]);
 
-  // BUG-011 fix: TTS echo cooldown refs — effect is declared after startRecognition below
   const ttsCooldownRef = useRef(false);
   const ttsEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -96,19 +100,26 @@ export default function VoiceInput({
     onListeningRef.current(false);
   }, []);
 
-  // BUG-003 + BUG-011 fix: startRecognition no longer captures isVoiceMode/isSpeaking in closure.
-  // Instead it reads from refs, so onend always sees current values.
   const startRecognition = useCallback(() => {
-    // Don't start if echo cooldown is active (TTS just played)
     if (ttsCooldownRef.current) return;
+    if (isRunningRef.current) return;
 
     const SpeechRecognitionClass =
       window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognitionClass) return;
+
+    if (!SpeechRecognitionClass) {
+      onErrorRef.current?.(
+        isIOS
+          ? "Voice needs Safari on iPhone — open this page in Safari."
+          : "Voice not supported in this browser. Try Chrome."
+      );
+      return;
+    }
 
     const recognition = new SpeechRecognitionClass();
     recognition.lang = "en-IN";
-    recognition.continuous = true;
+    // iOS Safari: continuous mode is unreliable — use single-shot + auto-restart
+    recognition.continuous = !isIOS;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
     recognitionRef.current = recognition;
@@ -130,10 +141,11 @@ export default function VoiceInput({
     recognition.onend = () => {
       isRunningRef.current = false;
       if (accumulatedRef.current.trim()) submitAccumulated();
-      // Read from refs — never stale (BUG-003 fix)
       if (isVoiceModeRef.current && !isSpeakingRef.current && !ttsCooldownRef.current) {
         setTimeout(() => {
-          if (!isRunningRef.current && !ttsCooldownRef.current) startRecognition();
+          if (!isRunningRef.current && !ttsCooldownRef.current && isVoiceModeRef.current) {
+            startRecognition();
+          }
         }, 200);
       } else {
         onListeningRef.current(false);
@@ -142,7 +154,14 @@ export default function VoiceInput({
 
     recognition.onerror = (e: any) => {
       isRunningRef.current = false;
-      if (e.error !== "no-speech" && e.error !== "aborted") {
+      const error: string = e.error ?? "";
+      if (error === "not-allowed" || error === "permission-denied" || error === "service-not-allowed") {
+        onErrorRef.current?.("Microphone blocked — allow mic access in your browser/phone settings.");
+        onListeningRef.current(false);
+      } else if (error === "network") {
+        onErrorRef.current?.("Voice unavailable — check your internet connection.");
+        onListeningRef.current(false);
+      } else if (error !== "no-speech" && error !== "aborted") {
         onListeningRef.current(false);
       }
     };
@@ -165,19 +184,30 @@ export default function VoiceInput({
       if (finalChunk) {
         accumulatedRef.current += finalChunk + " ";
         onInterimRef.current(accumulatedRef.current.trim());
-        const delay = speechEndedRef.current
-          ? SILENCE_AFTER_SPEECH_END_MS
-          : SILENCE_AFTER_FINAL_MS;
+        const delay = speechEndedRef.current ? SILENCE_AFTER_SPEECH_END_MS : SILENCE_AFTER_FINAL_MS;
         scheduleSubmit(delay);
       }
     };
 
-    recognition.start();
-  // BUG-003 fix: isVoiceMode and isSpeaking removed from deps — read via refs instead
+    try {
+      recognition.start();
+    } catch {
+      // Already started or other error — ignore
+      isRunningRef.current = false;
+    }
   }, [scheduleSubmit, submitAccumulated]);
 
-  // BUG-011 fix: manage echo cooldown; restart recognition after cooldown expires
-  // Declared after startRecognition so the reference is available
+  // Expose imperative handle so parent can call startListening() directly from tap handler
+  useImperativeHandle(ref, () => ({
+    startListening: () => {
+      if (!isRunningRef.current) startRecognition();
+    },
+    stopListening: () => {
+      stopRecognition();
+    },
+  }), [startRecognition, stopRecognition]);
+
+  // TTS echo cooldown
   useEffect(() => {
     isSpeakingRef.current = isSpeaking;
     if (isSpeaking) {
@@ -187,7 +217,6 @@ export default function VoiceInput({
       if (ttsEndTimerRef.current) clearTimeout(ttsEndTimerRef.current);
       ttsEndTimerRef.current = setTimeout(() => {
         ttsCooldownRef.current = false;
-        // Resume listening after echo decay — this is the missing restart after TTS ends
         if (isVoiceModeRef.current && !isRunningRef.current) {
           startRecognition();
         }
@@ -195,20 +224,18 @@ export default function VoiceInput({
     }
   }, [isSpeaking, startRecognition]);
 
+  // Stop recognition when voice mode turns OFF — no cleanup so it never fires on turn-ON
   useEffect(() => {
-    if (isVoiceMode && !isSpeaking && !ttsCooldownRef.current) {
-      if (!isRunningRef.current) startRecognition();
-    } else {
-      stopRecognition();
-    }
-    return () => {
-      if (!isVoiceMode) stopRecognition();
-    };
-  }, [isVoiceMode, isSpeaking, startRecognition, stopRecognition]);
+    if (!isVoiceMode) stopRecognition();
+  }, [isVoiceMode, stopRecognition]);
 
+  // Unmount cleanup only
   useEffect(() => {
     return () => stopRecognition();
-  }, [stopRecognition]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return null;
-}
+});
+
+export default VoiceInput;
