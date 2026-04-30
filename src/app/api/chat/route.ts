@@ -173,7 +173,14 @@ export async function POST(req: NextRequest) {
                   const input = history ? `${history}\nUser: ${lastMsg}` : lastMsg;
                   const result = await new Runner().run(agent, input);
                   fullText = String(result.finalOutput ?? "");
-                } catch {
+                } catch (e: unknown) {
+                  const status = (e as { status?: number })?.status;
+                  if (status === 401) {
+                    // Swiggy token expired — tell client to re-auth
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "token_expired" })}\n\n`));
+                    controller.close();
+                    return;
+                  }
                   mcpFailed = true;
                 } finally {
                   await Promise.all(agentMcpServers.map(s => s.close().catch(() => {})));

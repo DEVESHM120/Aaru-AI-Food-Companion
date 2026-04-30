@@ -973,6 +973,7 @@ export default function ChatPage() {
             activeProfile={activeProfile}
             profiles={allProfiles}
             preloadedAddresses={preloadedAddresses}
+            swiggyToken={userKeys.swiggyToken || undefined}
             onProfileChange={setActiveProfile}
             onAllProfilesChange={handleAllProfilesChange}
           />
@@ -1098,8 +1099,8 @@ export default function ChatPage() {
             className="flex items-center justify-between gap-3 px-4 py-2 text-xs"
             style={{ backgroundColor: "rgba(234,179,8,0.08)", borderBottom: "1px solid rgba(234,179,8,0.2)", color: "#CA8A04" }}
           >
-            <span>⚠️ Swiggy/Zomato session expired — reconnect in Settings</span>
-            <button onClick={() => { setTokenExpired(false); setWizardOpen(true); }} className="font-semibold underline">Reconnect</button>
+            <span>⚠️ Swiggy session expired — tap to reconnect</span>
+            <button onClick={() => { window.location.href = "/api/auth/swiggy/start"; }} className="font-semibold underline">Reconnect →</button>
           </motion.div>
         )}
       </AnimatePresence>

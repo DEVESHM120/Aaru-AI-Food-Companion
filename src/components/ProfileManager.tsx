@@ -5,10 +5,17 @@ import { motion, AnimatePresence } from "framer-motion";
 import { PersonProfile, PersonAddress } from "@/lib/profiles/types";
 import { getAllProfiles, saveProfile, deleteProfile, newProfileId } from "@/lib/profiles/store";
 
+interface AvailableAddress {
+  address_id: string;
+  location_name: string;
+  source: "zomato" | "swiggy";
+}
+
 interface ProfileManagerProps {
   activeProfile: PersonProfile | null;
   profiles: PersonProfile[];
   preloadedAddresses?: { address_id: string; location_name: string }[];
+  swiggyToken?: string;
   onProfileChange: (profile: PersonProfile) => void;
   onAllProfilesChange: (profiles: PersonProfile[]) => void;
 }
@@ -32,7 +39,7 @@ function toggleChip(arr: string[], val: string) {
 }
 
 export default function ProfileManager({
-  activeProfile, profiles, preloadedAddresses = [],
+  activeProfile, profiles, preloadedAddresses = [], swiggyToken,
   onProfileChange, onAllProfilesChange,
 }: ProfileManagerProps) {
   const [open, setOpen] = useState(false);
@@ -40,6 +47,8 @@ export default function ProfileManager({
   const [draft, setDraft] = useState<PersonProfile | null>(null);
   const [newName, setNewName] = useState("");
   const [showMemories, setShowMemories] = useState(false);
+  const [swiggyAddresses, setSwiggyAddresses] = useState<AvailableAddress[]>([]);
+  const [syncingSwiggy, setSyncingSwiggy] = useState(false);
 
   const others = profiles.filter((p) => p.id !== activeProfile?.id);
 
@@ -86,7 +95,7 @@ export default function ProfileManager({
     setNewName("");
   }
 
-  function toggleAddress(addr: { address_id: string; location_name: string }) {
+  function toggleAddress(addr: AvailableAddress) {
     if (!draft) return;
     const exists = draft.addresses.find((a) => a.addressId === addr.address_id);
     const addresses = exists
@@ -98,6 +107,29 @@ export default function ProfileManager({
           label: ADDRESS_LABELS[draft.addresses.length] ?? "Address",
         } as PersonAddress];
     setDraft({ ...draft, addresses });
+  }
+
+  async function syncSwiggyAddresses() {
+    if (!swiggyToken || syncingSwiggy) return;
+    setSyncingSwiggy(true);
+    try {
+      const res = await fetch("/api/swiggy/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: swiggyToken }),
+      });
+      const data = await res.json();
+      if (!Array.isArray(data.addresses)) return;
+      const mapped: AvailableAddress[] = data.addresses
+        .map((a: Record<string, string>) => ({
+          address_id: a.address_id ?? a.id ?? "",
+          location_name: a.address ?? a.formatted_address ?? a.locationName ?? a.location_name ?? "",
+          source: "swiggy" as const,
+        }))
+        .filter((a: AvailableAddress) => a.address_id && a.location_name);
+      setSwiggyAddresses(mapped);
+    } catch {}
+    setSyncingSwiggy(false);
   }
 
   function updateAddressLabel(addressId: string, label: string) {
@@ -308,51 +340,87 @@ export default function ProfileManager({
                     </Field>
 
                     {/* Addresses */}
-                    {preloadedAddresses.length > 0 && (
-                      <Field label="Delivery Addresses">
-                        <div className="space-y-2">
-                          {preloadedAddresses.map((addr) => {
-                            const linked = draft.addresses.find((a) => a.addressId === addr.address_id);
-                            return (
-                              <div key={addr.address_id} className="flex items-start gap-2">
-                                <button onClick={() => toggleAddress(addr)}
-                                  className="mt-0.5 w-5 h-5 rounded flex-shrink-0 flex items-center justify-center text-xs transition-all"
-                                  style={linked ? { backgroundColor: "var(--accent)", border: "2px solid var(--accent)", color: "white" }
-                                               : { backgroundColor: "var(--surface-2)", border: "2px solid var(--border)" }}>
-                                  {linked && "✓"}
-                                </button>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>{addr.location_name}</p>
-                                  {linked && (
-                                    <input type="text" value={linked.label}
-                                      onChange={(e) => updateAddressLabel(addr.address_id, e.target.value)}
-                                      placeholder="Label (Home, Office…)"
-                                      className="mt-1 w-full text-xs rounded-lg px-2 py-1 focus:outline-none"
-                                      style={{ backgroundColor: "rgba(255,69,0,0.07)", border: "1px solid rgba(255,69,0,0.25)", color: "var(--text)" }}
-                                    />
-                                  )}
+                    <Field label="Delivery Addresses">
+                      {/* Swiggy sync button */}
+                      {swiggyToken && (
+                        <button
+                          onClick={syncSwiggyAddresses}
+                          disabled={syncingSwiggy}
+                          className="w-full mb-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all"
+                          style={{ backgroundColor: syncingSwiggy ? "rgba(252,128,25,0.06)" : "rgba(252,128,25,0.1)", border: "1px solid rgba(252,128,25,0.25)", color: "#FC8019" }}
+                        >
+                          <span>{syncingSwiggy ? "⏳" : "🛵"}</span>
+                          {syncingSwiggy ? "Fetching from Swiggy…" : "Sync addresses from Swiggy"}
+                        </button>
+                      )}
+
+                      {/* Combined address list */}
+                      {(() => {
+                        const zomatoAddrs: AvailableAddress[] = preloadedAddresses.map(a => ({ ...a, source: "zomato" as const }));
+                        // Merge: swiggy takes precedence; deduplicate by address_id
+                        const seenIds = new Set(swiggyAddresses.map(a => a.address_id));
+                        const merged = [...swiggyAddresses, ...zomatoAddrs.filter(a => !seenIds.has(a.address_id))];
+
+                        if (merged.length === 0) return (
+                          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                            {swiggyToken ? 'Tap "Sync from Swiggy" to import your saved addresses.' : "No addresses found. Add your Swiggy account to auto-import."}
+                          </p>
+                        );
+
+                        return (
+                          <div className="space-y-2">
+                            {merged.map((addr) => {
+                              const linked = draft.addresses.find((a) => a.addressId === addr.address_id);
+                              return (
+                                <div key={addr.address_id} className="flex items-start gap-2">
+                                  <button onClick={() => toggleAddress(addr)}
+                                    className="mt-0.5 w-5 h-5 rounded flex-shrink-0 flex items-center justify-center text-xs transition-all"
+                                    style={linked ? { backgroundColor: "var(--accent)", border: "2px solid var(--accent)", color: "white" }
+                                                 : { backgroundColor: "var(--surface-2)", border: "2px solid var(--border)" }}>
+                                    {linked && "✓"}
+                                  </button>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                      <p className="text-xs truncate flex-1" style={{ color: "var(--text-muted)" }}>{addr.location_name}</p>
+                                      <span className="text-xs px-1.5 py-0.5 rounded-full flex-shrink-0 font-medium"
+                                        style={addr.source === "swiggy"
+                                          ? { backgroundColor: "rgba(252,128,25,0.1)", color: "#FC8019" }
+                                          : { backgroundColor: "rgba(226,55,68,0.08)", color: "#E23744" }}>
+                                        {addr.source === "swiggy" ? "Swiggy" : "Zomato"}
+                                      </span>
+                                    </div>
+                                    {linked && (
+                                      <input type="text" value={linked.label}
+                                        onChange={(e) => updateAddressLabel(addr.address_id, e.target.value)}
+                                        placeholder="Label (Home, Office…)"
+                                        className="mt-1 w-full text-xs rounded-lg px-2 py-1 focus:outline-none"
+                                        style={{ backgroundColor: "rgba(255,69,0,0.07)", border: "1px solid rgba(255,69,0,0.25)", color: "var(--text)" }}
+                                      />
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        {draft.addresses.length > 1 && (
-                          <div className="mt-3">
-                            <p className="text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Default address</p>
-                            <div className="flex gap-2 flex-wrap">
-                              {draft.addresses.map((a) => (
-                                <button key={a.addressId}
-                                  onClick={() => setDraft({ ...draft, defaultAddressId: a.addressId })}
-                                  className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all"
-                                  style={draft.defaultAddressId === a.addressId ? active : surface}>
-                                  {a.label}
-                                </button>
-                              ))}
-                            </div>
+                              );
+                            })}
                           </div>
-                        )}
-                      </Field>
-                    )}
+                        );
+                      })()}
+
+                      {draft.addresses.length > 1 && (
+                        <div className="mt-3">
+                          <p className="text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Default address</p>
+                          <div className="flex gap-2 flex-wrap">
+                            {draft.addresses.map((a) => (
+                              <button key={a.addressId}
+                                onClick={() => setDraft({ ...draft, defaultAddressId: a.addressId })}
+                                className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all"
+                                style={draft.defaultAddressId === a.addressId ? active : surface}>
+                                {a.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </Field>
 
                     {/* Diet */}
                     <Field label="Diet">
