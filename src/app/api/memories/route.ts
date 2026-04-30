@@ -2,7 +2,8 @@ import { auth } from "@/auth";
 import { NextRequest } from "next/server";
 
 export async function GET(req: NextRequest) {
-  const session = await auth();
+  let session = null;
+  try { session = await auth(); } catch { /* AUTH_SECRET not configured */ }
   const email = session?.user?.email;
   if (!email) return Response.json({ memories: [] });
 

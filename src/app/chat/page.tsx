@@ -88,7 +88,7 @@ function stopActiveAudio() {
 
 async function playTTS(text: string, elevenLabsKey?: string): Promise<void> {
   stopActiveAudio();
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -111,7 +111,7 @@ async function playTTS(text: string, elevenLabsKey?: string): Promise<void> {
         source.onended = () => { activeSource = null; resolve(); };
         source.start(0);
       })
-      .catch(() => resolve());
+      .catch((err) => reject(err));
   });
 }
 
@@ -474,7 +474,8 @@ export default function ChatPage() {
                     streamTTSStarted = true;
                     setVoiceState("speaking");
                     setIsTTSSpeaking(true);
-                    streamTTSPromise = playTTS(streamTTSFirstText, userKeys.elevenLabsKey || undefined);
+                    streamTTSPromise = playTTS(streamTTSFirstText, userKeys.elevenLabsKey || undefined)
+                      .catch(() => { setVoiceError("Voice output failed — check your ElevenLabs key in Settings."); });
                   }
                 }
               }
@@ -497,14 +498,18 @@ export default function ChatPage() {
                 if (event.clarification) setClarification(event.clarification);
 
                 if (mode === "voice" && event.shouldSpeak && event.cleanText) {
-                  if (streamTTSStarted && streamTTSPromise) {
-                    await streamTTSPromise;
-                    const remaining = event.cleanText.slice(streamTTSFirstText.length).trim();
-                    if (remaining) await playTTS(remaining, userKeys.elevenLabsKey || undefined);
-                  } else {
-                    setVoiceState("speaking");
-                    setIsTTSSpeaking(true);
-                    await playTTS(event.cleanText, userKeys.elevenLabsKey || undefined);
+                  try {
+                    if (streamTTSStarted && streamTTSPromise) {
+                      await streamTTSPromise;
+                      const remaining = event.cleanText.slice(streamTTSFirstText.length).trim();
+                      if (remaining) await playTTS(remaining, userKeys.elevenLabsKey || undefined);
+                    } else {
+                      setVoiceState("speaking");
+                      setIsTTSSpeaking(true);
+                      await playTTS(event.cleanText, userKeys.elevenLabsKey || undefined);
+                    }
+                  } catch {
+                    setVoiceError("Voice output failed — check your ElevenLabs key in Settings.");
                   }
                 }
                 setIsTTSSpeaking(false);

@@ -30,7 +30,8 @@ export async function POST(req: NextRequest) {
   if (fact) {
     try {
       const { kv } = await import("@vercel/kv");
-      const session = await auth();
+      let session = null;
+      try { session = await auth(); } catch { /* AUTH_SECRET not configured */ }
       const email = session?.user?.email;
       if (email) {
         const key = `mem:${email}:${profileName}`;

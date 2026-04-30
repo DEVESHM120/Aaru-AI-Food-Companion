@@ -133,7 +133,10 @@ export async function POST(req: NextRequest) {
               if (chunk.type === "content_block_delta" && chunk.delta.type === "text_delta") {
                 const text = chunk.delta.text;
                 fullText += text;
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "chunk", text })}\n\n`));
+                // Skip chunk streaming for MCP — Claude outputs tool-reasoning text users shouldn't see
+                if (!hasMcp) {
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "chunk", text })}\n\n`));
+                }
               }
             }
           }
