@@ -80,6 +80,7 @@ function fetchWithTimeout<T>(url: string, fallback: T, ms = 8000): Promise<T> {
 // Shared AudioContext — once resumed from a user gesture, stays unlocked all session
 let sharedAudioCtx: AudioContext | null = null;
 let activeSource: AudioBufferSourceNode | null = null;
+let browserTTSActive = false;
 
 function getAudioCtx(): AudioContext {
   if (!sharedAudioCtx) {
@@ -91,35 +92,84 @@ function getAudioCtx(): AudioContext {
 function stopActiveAudio() {
   try { activeSource?.stop(); } catch {}
   activeSource = null;
+  if (browserTTSActive) {
+    try { window.speechSynthesis.cancel(); } catch {}
+    browserTTSActive = false;
+  }
+}
+
+function playBrowserTTS(text: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const synth = window.speechSynthesis;
+    synth.cancel(); // iOS: must cancel before speaking
+
+    const speak = () => {
+      const voices = synth.getVoices();
+      const voice =
+        voices.find(v => v.lang.startsWith("en-IN")) ??
+        voices.find(v => v.lang.startsWith("en-US")) ??
+        voices.find(v => v.lang.startsWith("en")) ?? null;
+
+      const utt = new SpeechSynthesisUtterance(text);
+      if (voice) utt.voice = voice;
+      utt.rate = 1.05;
+      utt.pitch = 1.0;
+      browserTTSActive = true;
+      utt.onend = () => { browserTTSActive = false; resolve(); };
+      utt.onerror = (e) => {
+        browserTTSActive = false;
+        if (e.error === "interrupted") { resolve(); return; }
+        reject(new Error(`Browser TTS error: ${e.error}`));
+      };
+      synth.speak(utt);
+    };
+
+    const voices = synth.getVoices();
+    if (voices.length > 0) {
+      speak();
+    } else {
+      // Chrome loads voices async
+      const timeout = setTimeout(speak, 800);
+      synth.addEventListener("voiceschanged", function handler() {
+        clearTimeout(timeout);
+        synth.removeEventListener("voiceschanged", handler);
+        speak();
+      }, { once: true });
+    }
+  });
 }
 
 async function playTTS(text: string, elevenLabsKey?: string): Promise<void> {
   stopActiveAudio();
-  return new Promise((resolve, reject) => {
-    fetch("/api/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, elevenLabsKey }),
-    })
-      .then((r) => {
-        const ct = r.headers.get("Content-Type") ?? "";
-        if (!r.ok || !ct.includes("audio")) return Promise.reject(new Error("not audio"));
-        return r.arrayBuffer();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, elevenLabsKey }),
       })
-      .then(async (buffer) => {
-        const ctx = getAudioCtx();
-        // Ensure context is running (iOS suspends it between gestures)
-        if (ctx.state === "suspended") await ctx.resume();
-        const audioBuffer = await ctx.decodeAudioData(buffer);
-        const source = ctx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(ctx.destination);
-        activeSource = source;
-        source.onended = () => { activeSource = null; resolve(); };
-        source.start(0);
-      })
-      .catch((err) => reject(err));
-  });
+        .then((r) => {
+          const ct = r.headers.get("Content-Type") ?? "";
+          if (!r.ok || !ct.includes("audio")) return Promise.reject(new Error("not audio"));
+          return r.arrayBuffer();
+        })
+        .then(async (buffer) => {
+          const ctx = getAudioCtx();
+          if (ctx.state === "suspended") await ctx.resume();
+          const audioBuffer = await ctx.decodeAudioData(buffer);
+          const source = ctx.createBufferSource();
+          source.buffer = audioBuffer;
+          source.connect(ctx.destination);
+          activeSource = source;
+          source.onended = () => { activeSource = null; resolve(); };
+          source.start(0);
+        })
+        .catch((err) => reject(err));
+    });
+  } catch {
+    // ElevenLabs failed — silently fall back to browser speech synthesis
+    await playBrowserTTS(text);
+  }
 }
 
 const LEARNING_SIGNAL = /\b(don'?t|never|always|prefer|hate|love|allergic|remember|told you|wrong|actually|favourite|dislike|not again|bored of|i'?m|vegan|vegetarian|keto|lactose|avoid|stop|please no)\b/i;
@@ -240,6 +290,32 @@ export default function ChatPage() {
       });
       // Clean URL
       window.history.replaceState({}, "", window.location.pathname);
+
+      // Pre-fetch Swiggy addresses to auto-populate the active profile
+      if (swiggyToken) {
+        fetch("/api/swiggy/profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: swiggyToken }),
+        })
+          .then(r => r.json())
+          .then(({ addresses }) => {
+            if (!Array.isArray(addresses) || addresses.length === 0) return;
+            const mapped: PersonAddress[] = addresses.map((a: Record<string, string>) => ({
+              addressId: a.address_id ?? a.id ?? "",
+              label: a.name ?? a.label ?? "Home",
+              locationName: a.address ?? a.formatted_address ?? a.locationName ?? "",
+              city: a.city ?? "",
+            }));
+            const profiles = getAllProfiles();
+            if (profiles.length > 0) {
+              const updated = { ...profiles[0], addresses: mapped };
+              saveProfile(updated);
+              setActiveProfile(updated);
+            }
+          })
+          .catch(() => {});
+      }
     }
 
     // Auto-open wizard on first visit
@@ -414,15 +490,21 @@ export default function ChatPage() {
 
   // ── Order select — address picker logic ───────────────────────────────────────
   const handleOrderSelect = useCallback((order: OrderDetails) => {
-    if (activeProfile && activeProfile.addresses.length > 1) {
+    if (!activeProfile || activeProfile.addresses.length === 0) {
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(), role: "assistant" as const,
+        content: "Add a delivery address to your profile before ordering — tap your name in the header to open Profile settings.",
+        timestamp: new Date(),
+      }]);
+      return;
+    }
+    if (activeProfile.addresses.length > 1) {
       setPendingOrderNoAddr(order);
     } else {
-      const addr = activeProfile?.addresses[0];
+      const addr = activeProfile.addresses[0];
       setPendingOrder({
         ...order,
-        deliveryAddress: addr
-          ? { label: addr.label, locationName: addr.locationName, addressId: addr.addressId }
-          : undefined,
+        deliveryAddress: { label: addr.label, locationName: addr.locationName, addressId: addr.addressId },
       });
     }
   }, [activeProfile]);
@@ -486,7 +568,7 @@ export default function ChatPage() {
             anthropicKey: userKeys.anthropicKey || undefined,
             zomatoToken: userKeys.zomatoToken || undefined,
             swiggyToken: userKeys.swiggyToken || undefined,
-            isTrial: !userKeys.anthropicKey,
+            isTrial: !userKeys.anthropicKey && !userKeys.swiggyToken && !userKeys.zomatoToken,
           }),
         });
 
@@ -564,7 +646,7 @@ export default function ChatPage() {
                     setVoiceState("speaking");
                     setIsTTSSpeaking(true);
                     streamTTSPromise = playTTS(streamTTSFirstText, userKeys.elevenLabsKey || undefined)
-                      .catch(() => { setVoiceError("Voice output failed — check your ElevenLabs key in Settings."); });
+                      .catch(() => {});
                   }
                 }
               }
@@ -602,7 +684,7 @@ export default function ChatPage() {
                       await playTTS(event.cleanText, userKeys.elevenLabsKey || undefined);
                     }
                   } catch {
-                    setVoiceError("Voice output failed — check your ElevenLabs key in Settings.");
+                    // playTTS already fell back to browser TTS — only show error if that also failed
                   }
                 }
                 setIsTTSSpeaking(false);
@@ -802,12 +884,32 @@ export default function ChatPage() {
       handleAllProfilesChange(getAllProfiles());
     }
 
+    // Zomato can't place orders via MCP — open their app instead
+    if (pendingOrder.platform === "zomato") {
+      const query = encodeURIComponent(pendingOrder.restaurant.name);
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(), role: "assistant" as const,
+        content: `Zomato ordering opens in their app — [Tap to order from ${pendingOrder.restaurant.name} on Zomato](https://www.zomato.com/search?keyword=${query})`,
+        timestamp: new Date(),
+      }]);
+      setPendingOrder(null);
+      setOrderPlaced(null);
+      return;
+    }
+
     setOrderPlaced(pendingOrder);
     setPendingOrder(null);
 
-    const addr = pendingOrder.deliveryAddress?.locationName ?? "my saved home address";
+    const deliveryAddr = pendingOrder.deliveryAddress;
+    const addrStr = deliveryAddr
+      ? `${deliveryAddr.label}: ${deliveryAddr.locationName}${deliveryAddr.addressId ? ` [address_id: ${deliveryAddr.addressId}]` : ""}`
+      : "my first saved address";
+
     await sendMessage(
-      `Place an order for ${pendingOrder.item} (₹${pendingOrder.price}) from ${pendingOrder.restaurant.name} on ${pendingOrder.platform} to ${addr}. Use the ${pendingOrder.platform} MCP tools to complete the order now, then return an order_status block with the orderId and status.`,
+      `Place an order for "${pendingOrder.item}" (₹${pendingOrder.price}) from "${pendingOrder.restaurant.name}" on Swiggy. ` +
+      `Deliver to ${addrStr}. ` +
+      `Use swiggy-food MCP tools: call get_addresses to confirm the address_id, then add_to_cart, then place_order. ` +
+      `Return a \`\`\`order_status block with orderId and status when complete.`,
       isVoiceModeRef.current ? "voice" : "text"
     );
   }, [pendingOrder, activeProfile, sendMessage, handleAllProfilesChange]);

@@ -12,41 +12,25 @@ export const maxDuration = 60;
 
 const TRIAL_ORDER_LIMIT = 5;
 
-// ── Anthropic MCP servers (full mode) ───────────────────────────────────────
-function buildMcpServers(swiggyToken?: string, zomatoToken?: string) {
-  const servers: Anthropic.Beta.BetaRequestMCPServerURLDefinition[] = [];
-  if (swiggyToken) {
-    servers.push(
-      { type: "url", name: "swiggy-food", url: "https://mcp.swiggy.com/food", authorization_token: swiggyToken },
-      { type: "url", name: "swiggy-instamart", url: "https://mcp.swiggy.com/im", authorization_token: swiggyToken },
-      { type: "url", name: "swiggy-dineout", url: "https://mcp.swiggy.com/dineout", authorization_token: swiggyToken },
-    );
-  }
-  if (zomatoToken) {
-    servers.push(
-      { type: "url", name: "zomato", url: "https://mcp-server.zomato.com/mcp", authorization_token: zomatoToken },
-    );
-  }
-  return servers;
+// ── Anthropic MCP servers (full mode) — Swiggy only, Zomato is read-only ────
+function buildMcpServers(swiggyToken?: string) {
+  if (!swiggyToken) return [];
+  return [
+    { type: "url" as const, name: "swiggy-food", url: "https://mcp.swiggy.com/food", authorization_token: swiggyToken },
+    { type: "url" as const, name: "swiggy-instamart", url: "https://mcp.swiggy.com/im", authorization_token: swiggyToken },
+    { type: "url" as const, name: "swiggy-dineout", url: "https://mcp.swiggy.com/dineout", authorization_token: swiggyToken },
+  ] as Anthropic.Beta.BetaRequestMCPServerURLDefinition[];
 }
 
 // ── OpenAI Agents SDK MCP servers (trial mode — Groq model) ─────────────────
-function buildAgentMcpServers(swiggyToken?: string, zomatoToken?: string) {
-  const servers: MCPServerStreamableHttp[] = [];
-  if (swiggyToken) {
-    const authHeaders = { headers: { Authorization: `Bearer ${swiggyToken}` } };
-    servers.push(
-      new MCPServerStreamableHttp({ name: "swiggy-food", url: "https://mcp.swiggy.com/food", requestInit: authHeaders }),
-      new MCPServerStreamableHttp({ name: "swiggy-instamart", url: "https://mcp.swiggy.com/im", requestInit: authHeaders }),
-      new MCPServerStreamableHttp({ name: "swiggy-dineout", url: "https://mcp.swiggy.com/dineout", requestInit: authHeaders }),
-    );
-  }
-  if (zomatoToken) {
-    servers.push(
-      new MCPServerStreamableHttp({ name: "zomato", url: "https://mcp-server.zomato.com/mcp", requestInit: { headers: { Authorization: `Bearer ${zomatoToken}` } } }),
-    );
-  }
-  return servers;
+function buildAgentMcpServers(swiggyToken?: string) {
+  if (!swiggyToken) return [];
+  const authHeaders = { headers: { Authorization: `Bearer ${swiggyToken}` } };
+  return [
+    new MCPServerStreamableHttp({ name: "swiggy-food", url: "https://mcp.swiggy.com/food", requestInit: authHeaders }),
+    new MCPServerStreamableHttp({ name: "swiggy-instamart", url: "https://mcp.swiggy.com/im", requestInit: authHeaders }),
+    new MCPServerStreamableHttp({ name: "swiggy-dineout", url: "https://mcp.swiggy.com/dineout", requestInit: authHeaders }),
+  ];
 }
 
 const SYSTEM_SUFFIX = `\n\nIMPORTANT: For VAGUE intent → use ONLY the \`\`\`clarification block. For all other intents → use EITHER \`\`\`restaurants OR \`\`\`dishes (never both, never with clarification). Always real Indian names, INR prices.`;
@@ -101,10 +85,9 @@ export async function POST(req: NextRequest) {
     };
 
     const swiggyToken = userSwiggyToken || process.env.SWIGGY_MCP_AUTH_TOKEN || undefined;
-    const zomatoToken = userZomatoToken || process.env.ZOMATO_MCP_AUTH_TOKEN || undefined;
 
-    // hasMcp drives the system prompt (tells Claude about live data access)
-    const anthropicMcpServers = buildMcpServers(swiggyToken, zomatoToken);
+    // hasMcp drives the system prompt (tells Claude about live data access) — Swiggy only
+    const anthropicMcpServers = buildMcpServers(swiggyToken);
     const hasMcp = anthropicMcpServers.length > 0;
 
     const systemPrompt = buildSystemPrompt(activeProfile, allProfiles, weather, hasMcp);
@@ -115,9 +98,9 @@ export async function POST(req: NextRequest) {
         try {
           let fullText = "";
 
-          // ── Trial mode: Groq model + OpenAI Agents SDK MCP ──────────────
-          if (isTrial && !anthropicKey) {
-            // Enforce trial order limit (per Google account)
+          // ── Order limit applies whenever user has no own Anthropic key ───
+          const usingOurKey = !anthropicKey;
+          if (usingOurKey) {
             let session = null;
             try { session = await auth(); } catch {}
             const email = session?.user?.email;
@@ -132,7 +115,10 @@ export async function POST(req: NextRequest) {
                 }
               } catch {}
             }
+          }
 
+          // ── Trial mode: Groq model + OpenAI Agents SDK MCP ──────────────
+          if (isTrial && !anthropicKey) {
             const groqApiKey = process.env.GROQ_API_KEY;
             if (!groqApiKey) {
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", message: "Trial unavailable — GROQ_API_KEY not configured." })}\n\n`));
@@ -140,7 +126,7 @@ export async function POST(req: NextRequest) {
               return;
             }
 
-            const agentMcpServers = buildAgentMcpServers(swiggyToken, zomatoToken);
+            const agentMcpServers = buildAgentMcpServers(swiggyToken);
 
             const runGroqDemo = async () => {
               // ── Pure Groq streaming — demo data, no MCP ──────────────────
@@ -203,14 +189,6 @@ export async function POST(req: NextRequest) {
               await runGroqDemo();
             }
 
-            // Increment trial order count if an order was placed
-            if (email && fullText.includes("```order_status")) {
-              try {
-                const { kv } = await import("@vercel/kv");
-                await kv.incr(`trial:orders:${email}`);
-              } catch {}
-            }
-
           } else {
             // ── Full mode: Anthropic + MCP ────────────────────────────────
             const apiKey = anthropicKey || process.env.ANTHROPIC_API_KEY;
@@ -260,6 +238,18 @@ export async function POST(req: NextRequest) {
               }
               throw e;
             }
+          }
+
+          // ── Increment order count for our-key users when an order is placed ─
+          if (usingOurKey && fullText.includes("```order_status")) {
+            try {
+              let sess = null;
+              try { sess = await auth(); } catch {}
+              if (sess?.user?.email) {
+                const { kv } = await import("@vercel/kv");
+                await kv.incr(`trial:orders:${sess.user.email}`);
+              }
+            } catch {}
           }
 
           // ── Parse JSON blocks and emit done ──────────────────────────────

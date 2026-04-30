@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 
 const CLIENT_ID = process.env.SWIGGY_MCP_CLIENT_ID;
-const REDIRECT_URI = "https://aaru-food-companion.vercel.app/api/auth/swiggy/callback";
+const REDIRECT_URI = `${process.env.NEXTAUTH_URL ?? "https://aaru-food-companion.vercel.app"}/api/auth/swiggy/callback`;
 
 function base64url(buf: Buffer): string {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");

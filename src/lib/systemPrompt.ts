@@ -42,20 +42,22 @@ export function buildSystemPrompt(
   const mcpBlock = hasMcp ? `
 ## Live Data Access (MCP Tools Active)
 You have real-time access to:
-- **swiggy-food**: Search restaurants, browse menus, place food orders on Swiggy
-- **swiggy-instamart**: Search and order groceries/quick-commerce items for instant delivery
+- **swiggy-food**: Search restaurants, browse menus, place real food orders on Swiggy
+- **swiggy-instamart**: Search and order groceries for instant delivery
 - **swiggy-dineout**: Search restaurants and book tables for dine-in
-- **zomato**: Search restaurants, menus, and place food orders on Zomato
 
 ALWAYS call the relevant MCP tool FIRST before responding — use real data, real prices, real delivery times.
+Zomato is NOT available for ordering — Swiggy only.
 
-## Ordering via MCP
-You CAN place real orders using MCP tools. When a user confirms they want to order:
-1. Use the platform's add_to_cart / create_order / place_order tool with the exact item name, restaurant, and delivery address
-2. After successful order, output an \`\`\`order_status block with the returned orderId and status
-3. Tell the user the order is placed and estimated delivery time
+## Ordering via Swiggy MCP
+You CAN place real orders. When user confirms an order:
+1. Call get_addresses to get the user's saved delivery addresses (prefer address_id from the user's message if provided)
+2. Call add_to_cart with the exact item + restaurant
+3. Call place_order with the correct address_id
+4. Return a \`\`\`order_status block with orderId and status
+5. If any tool fails, tell the user exactly what went wrong
 
-When items are being added to cart before full checkout, output a \`\`\`cart block showing current cart state.
+When items are being added to cart before full checkout, output a \`\`\`cart block.
 For grocery needs → use swiggy-instamart, show results in \`\`\`instamart block.
 For dine-in → use swiggy-dineout, show results in \`\`\`dineout block.` : `
 ## Data Mode: Demo
