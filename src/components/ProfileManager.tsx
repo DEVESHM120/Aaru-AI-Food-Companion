@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { PersonProfile, PersonAddress } from "@/lib/profiles/types";
 import { getAllProfiles, saveProfile, deleteProfile, newProfileId } from "@/lib/profiles/store";
-import { PastOrder } from "@/lib/profiles/types";
 
 interface ProfileManagerProps {
   activeProfile: PersonProfile | null;
@@ -20,586 +19,465 @@ const LIKE_CHIPS = ["Spicy 🌶️", "Biryani 🍛", "North Indian", "South Indi
 const DISLIKE_CHIPS = ["Sweets", "Too Oily", "South Indian", "Chinese", "Junk Food", "Raw Food"];
 const ADDRESS_LABELS = ["Home", "Office", "College", "Gym", "Parents' place"];
 
-function emptyProfile(): PersonProfile {
-  return {
-    id: newProfileId(),
-    name: "",
-    addresses: [],
-    preferences: { likes: [], dislikes: [], diet: "both", priceRange: "mid", notes: "" },
-    pastOrders: [],
-  };
+function extractCity(loc: string): string {
+  for (const part of loc.split(",").reverse()) {
+    const t = part.trim();
+    if (t && t.length > 2 && !t.match(/^\d/)) return t;
+  }
+  return "Delhi";
+}
+
+function toggleChip(arr: string[], val: string) {
+  return arr.includes(val) ? arr.filter((v) => v !== val) : [...arr, val];
 }
 
 export default function ProfileManager({
-  activeProfile,
-  profiles,
-  preloadedAddresses,
-  onProfileChange,
-  onAllProfilesChange,
+  activeProfile, profiles, preloadedAddresses = [],
+  onProfileChange, onAllProfilesChange,
 }: ProfileManagerProps) {
-  const [availableAddresses, setAvailableAddresses] = useState<{ address_id: string; location_name: string }[]>([]);
-  const [isOpen, setIsOpen] = useState(false);
-  const [editingProfile, setEditingProfile] = useState<PersonProfile | null>(null);
-  const [isAddingNew, setIsAddingNew] = useState(false);
-  const [pastOrders, setPastOrders] = useState<PastOrder[]>([]);
-  const [loadingOrders, setLoadingOrders] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"list" | "edit">("list");
+  const [draft, setDraft] = useState<PersonProfile | null>(null);
+  const [newName, setNewName] = useState("");
+  const [showMemories, setShowMemories] = useState(false);
 
-  useEffect(() => {
-    if (preloadedAddresses && preloadedAddresses.length > 0) {
-      setAvailableAddresses(preloadedAddresses);
-    }
-  }, [preloadedAddresses]);
+  const others = profiles.filter((p) => p.id !== activeProfile?.id);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setAvailableAddresses((cur) => {
-        if (cur.length > 0) return cur;
-        fetch("/api/addresses")
-          .then((r) => r.json())
-          .then((data) => { if (data.length > 0) setAvailableAddresses(data); })
-          .catch(() => {});
-        return cur;
-      });
-    }, 800);
-    return () => clearTimeout(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  function openEdit(profile: PersonProfile) {
-    setEditingProfile({ ...profile, addresses: [...profile.addresses], pastOrders: [...profile.pastOrders] });
-    setIsAddingNew(false);
-    setIsOpen(false);
-    loadOrders();
+  function openEdit(p: PersonProfile) {
+    setDraft({ ...p, preferences: { ...p.preferences }, addresses: [...p.addresses] });
+    setView("edit");
   }
 
-  function openNew() {
-    setEditingProfile(emptyProfile());
-    setIsAddingNew(true);
-    setIsOpen(false);
+  function cancelEdit() {
+    setDraft(null);
+    setView("list");
   }
 
-  async function loadOrders(forceRefresh = false) {
-    if (loadingOrders) return;
-    if (!forceRefresh && pastOrders.length > 0) return;
-    setLoadingOrders(true);
-    try {
-      const res = await fetch("/api/orders");
-      const data = await res.json();
-      setPastOrders(data);
-    } catch {}
-    setLoadingOrders(false);
-  }
-
-  async function syncOrdersToProfile() {
-    if (!editingProfile) return;
-    setLoadingOrders(true);
-    try {
-      const res = await fetch("/api/orders");
-      const orders = await res.json();
-      setPastOrders(orders);
-      setEditingProfile({ ...editingProfile, pastOrders: orders });
-    } catch {}
-    setLoadingOrders(false);
-  }
-
-  function persistProfile(p: PersonProfile) {
-    saveProfile(p);
-    const updated = getAllProfiles();
-    onAllProfilesChange(updated);
-    onProfileChange(p);
-    setEditingProfile(null);
+  function saveEdit() {
+    if (!draft || !draft.name.trim()) return;
+    saveProfile(draft);
+    const all = getAllProfiles();
+    onAllProfilesChange(all);
+    if (draft.id === activeProfile?.id) onProfileChange(draft);
+    setDraft(null);
+    setView("list");
   }
 
   function handleDelete(id: string) {
     deleteProfile(id);
-    const updated = getAllProfiles();
-    onAllProfilesChange(updated);
-    if (activeProfile?.id === id && updated.length > 0) {
-      onProfileChange(updated[0]);
-    }
-    setEditingProfile(null);
+    const remaining = getAllProfiles();
+    onAllProfilesChange(remaining);
+    if (activeProfile?.id === id && remaining.length > 0) onProfileChange(remaining[0]);
+    setDraft(null);
+    setView("list");
   }
 
-  function toggleChip(arr: string[], val: string) {
-    return arr.includes(val) ? arr.filter((v) => v !== val) : [...arr, val];
-  }
-
-  function toggleAddress(profile: PersonProfile, addr: { address_id: string; location_name: string }) {
-    const exists = profile.addresses.find((a) => a.addressId === addr.address_id);
-    if (exists) {
-      return profile.addresses.filter((a) => a.addressId !== addr.address_id);
-    }
-    const city = extractCity(addr.location_name);
-    const newAddr: PersonAddress = {
-      addressId: addr.address_id,
-      locationName: addr.location_name,
-      city,
-      label: ADDRESS_LABELS[profile.addresses.length] ?? "Address",
+  function handleAddPerson() {
+    if (!newName.trim()) return;
+    const p: PersonProfile = {
+      id: newProfileId(),
+      name: newName.trim(),
+      addresses: [],
+      preferences: { likes: [], dislikes: [], diet: "both", priceRange: "mid", notes: "" },
+      pastOrders: [],
     };
-    return [...profile.addresses, newAddr];
+    saveProfile(p);
+    onAllProfilesChange(getAllProfiles());
+    setNewName("");
   }
 
-  function updateAddressLabel(profile: PersonProfile, addressId: string, label: string): PersonAddress[] {
-    return profile.addresses.map((a) =>
-      a.addressId === addressId ? { ...a, label } : a
-    );
+  function toggleAddress(addr: { address_id: string; location_name: string }) {
+    if (!draft) return;
+    const exists = draft.addresses.find((a) => a.addressId === addr.address_id);
+    const addresses = exists
+      ? draft.addresses.filter((a) => a.addressId !== addr.address_id)
+      : [...draft.addresses, {
+          addressId: addr.address_id,
+          locationName: addr.location_name,
+          city: extractCity(addr.location_name),
+          label: ADDRESS_LABELS[draft.addresses.length] ?? "Address",
+        } as PersonAddress];
+    setDraft({ ...draft, addresses });
   }
 
-  const inputStyle = {
-    backgroundColor: "var(--surface-2)",
-    border: "1px solid var(--border)",
-    color: "var(--text)",
-  };
+  function updateAddressLabel(addressId: string, label: string) {
+    if (!draft) return;
+    setDraft({ ...draft, addresses: draft.addresses.map((a) => a.addressId === addressId ? { ...a, label } : a) });
+  }
 
-  const pillBase = "flex-1 py-2 rounded-xl text-sm font-medium transition-colors";
+  const pill = "flex-1 py-2 rounded-xl text-sm font-medium transition-colors";
+  const surface = { backgroundColor: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text-muted)" };
+  const active = { background: "linear-gradient(135deg,#FF4500,#FF7A00)", color: "white" };
 
   return (
     <>
-      {/* Trigger button */}
-      <div className="relative">
-        <button
-          onClick={() => setIsOpen(!isOpen)}
-          className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full transition-colors"
-          style={{ backgroundColor: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text)" }}
-        >
-          <span>👤</span>
-          <span>{activeProfile ? activeProfile.name : "Add Person"}</span>
-          <span style={{ color: "var(--text-muted)" }}>▾</span>
-        </button>
+      {/* Header trigger */}
+      <button
+        onClick={() => { setView("list"); setOpen(true); }}
+        className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full transition-colors"
+        style={{ backgroundColor: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text)" }}
+      >
+        <span>👤</span>
+        <span>{activeProfile?.name ?? "People"}</span>
+        <span style={{ color: "var(--text-muted)" }}>▾</span>
+      </button>
 
-        <AnimatePresence>
-          {isOpen && (
-            <motion.div
-              initial={{ opacity: 0, y: -4, scale: 0.97 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -4, scale: 0.97 }}
-              className="absolute top-9 left-0 w-72 rounded-2xl z-50 overflow-hidden"
-              style={{
-                backgroundColor: "var(--surface)",
-                border: "1px solid var(--border)",
-                boxShadow: "0 16px 40px rgba(0,0,0,0.35)",
-              }}
-            >
-              <div className="p-3 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
-                <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>People</p>
-                <button
-                  onClick={openNew}
-                  className="text-xs font-semibold transition-opacity hover:opacity-70"
-                  style={{ color: "var(--accent-2)" }}
-                >
-                  + Add person
-                </button>
-              </div>
-
-              {profiles.length === 0 ? (
-                <div className="p-4 text-sm text-center" style={{ color: "var(--text-muted)" }}>
-                  No profiles yet.<br />Add a person to get started.
-                </div>
-              ) : (
-                <div className="max-h-64 overflow-y-auto">
-                  {profiles.map((p) => (
-                    <div
-                      key={p.id}
-                      className="flex items-center justify-between px-4 py-3 last:border-0"
-                      style={{
-                        borderBottom: "1px solid var(--border)",
-                        backgroundColor: activeProfile?.id === p.id ? "rgba(255,69,0,0.06)" : "transparent",
-                      }}
-                    >
-                      <button
-                        onClick={() => { onProfileChange(p); setIsOpen(false); }}
-                        className="flex-1 text-left"
-                      >
-                        <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>{p.name}</p>
-                        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-                          {p.addresses.map((a) => a.label).join(", ") || "No address"}
-                          {" · "}{p.preferences.diet}
-                        </p>
-                      </button>
-                      <button
-                        onClick={() => openEdit(p)}
-                        className="text-xs px-2 py-1 transition-opacity hover:opacity-70"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        Edit
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      {/* Profile editor modal */}
       <AnimatePresence>
-        {editingProfile && (
-          <>
+        {open && (
+          <motion.div className="fixed inset-0 z-50 flex flex-col justify-end">
+            {/* Backdrop */}
             <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-50"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="absolute inset-0"
               style={{ backgroundColor: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)" }}
-              onClick={() => setEditingProfile(null)}
+              onClick={() => { setOpen(false); cancelEdit(); }}
             />
+
+            {/* Sheet */}
             <motion.div
-              initial={{ opacity: 0, y: 20, scale: 0.96 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.96 }}
-              className="fixed inset-x-4 bottom-4 sm:inset-auto sm:left-1/2 sm:-translate-x-1/2 sm:w-[460px] sm:bottom-8 rounded-3xl z-50 overflow-hidden max-h-[90vh] overflow-y-auto"
-              style={{
-                backgroundColor: "var(--surface)",
-                border: "1px solid var(--border)",
-                boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
-              }}
+              initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+              transition={{ type: "spring", damping: 32, stiffness: 320 }}
+              className="relative rounded-t-3xl max-h-[88vh] overflow-y-auto"
+              style={{ backgroundColor: "var(--bg)", border: "1px solid var(--border)" }}
+              onClick={(e) => e.stopPropagation()}
             >
-              {/* Header */}
-              <div className="p-5 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
-                <div>
-                  <h2 className="font-bold" style={{ color: "var(--text)" }}>
-                    {isAddingNew ? "New person" : `Edit ${editingProfile.name}`}
-                  </h2>
-                  <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-                    {isAddingNew ? "Set name, address and preferences" : "Update preferences and details"}
-                  </p>
-                </div>
-                {!isAddingNew && (
-                  <button
-                    onClick={() => handleDelete(editingProfile.id)}
-                    className="text-xs px-2 py-1 transition-opacity hover:opacity-70"
-                    style={{ color: "#EF4444" }}
-                  >
-                    Delete
-                  </button>
-                )}
+              {/* Handle */}
+              <div className="flex justify-center pt-3 pb-1">
+                <div className="w-10 h-1 rounded-full" style={{ backgroundColor: "var(--border)" }} />
               </div>
 
-              <div className="p-5 space-y-5">
-                {/* Name */}
-                <div>
-                  <SectionLabel>Name</SectionLabel>
-                  <input
-                    type="text"
-                    value={editingProfile.name}
-                    onChange={(e) => setEditingProfile({ ...editingProfile, name: e.target.value })}
-                    placeholder="e.g. Devesh, Divya, Mom..."
-                    className="w-full rounded-xl px-4 py-2.5 text-sm placeholder:opacity-40 focus:outline-none"
-                    style={{ ...inputStyle, outline: "none" }}
-                    onFocus={(e) => (e.currentTarget.style.boxShadow = "0 0 0 2px rgba(255,69,0,0.3)")}
-                    onBlur={(e) => (e.currentTarget.style.boxShadow = "none")}
-                  />
-                </div>
+              {/* ── LIST VIEW ─────────────────────────────────────────────── */}
+              {view === "list" && (
+                <div className="px-4 pb-8">
+                  <div className="flex items-center justify-between py-3 mb-1">
+                    <h2 className="font-bold text-base" style={{ color: "var(--text)" }}>People & Preferences</h2>
+                    <button onClick={() => { setOpen(false); }} className="text-lg leading-none" style={{ color: "var(--text-muted)" }}>✕</button>
+                  </div>
 
-                {/* Addresses */}
-                <div>
-                  <SectionLabel>Delivery Addresses</SectionLabel>
-                  {availableAddresses.length === 0 ? (
-                    <p className="text-xs" style={{ color: "var(--text-muted)" }}>No Zomato addresses found. Connect Zomato MCP to load.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {availableAddresses.map((addr) => {
-                        const linked = editingProfile.addresses.find((a) => a.addressId === addr.address_id);
-                        return (
-                          <div key={addr.address_id} className="flex items-start gap-2">
-                            <button
-                              onClick={() =>
-                                setEditingProfile({
-                                  ...editingProfile,
-                                  addresses: toggleAddress(editingProfile, addr),
-                                })
-                              }
-                              className="mt-0.5 w-5 h-5 rounded flex-shrink-0 flex items-center justify-center transition-all text-xs"
-                              style={linked ? {
-                                backgroundColor: "var(--accent)",
-                                border: "2px solid var(--accent)",
-                                color: "white",
-                              } : {
-                                backgroundColor: "var(--surface-2)",
-                                border: "2px solid var(--border)",
-                              }}
-                            >
-                              {linked && "✓"}
-                            </button>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>{addr.location_name}</p>
-                              {linked && (
-                                <input
-                                  type="text"
-                                  value={linked.label}
-                                  onChange={(e) =>
-                                    setEditingProfile({
-                                      ...editingProfile,
-                                      addresses: updateAddressLabel(editingProfile, addr.address_id, e.target.value),
-                                    })
-                                  }
-                                  placeholder="Label (Home, Office...)"
-                                  className="mt-1 w-full text-xs rounded-lg px-2 py-1 focus:outline-none"
-                                  style={{
-                                    backgroundColor: "rgba(255,69,0,0.07)",
-                                    border: "1px solid rgba(255,69,0,0.25)",
-                                    color: "var(--text)",
-                                  }}
-                                />
-                              )}
+                  {/* You */}
+                  {activeProfile && (
+                    <section className="mb-5">
+                      <Label>You</Label>
+                      <div className="rounded-2xl p-4" style={{ backgroundColor: "var(--surface)", border: "2px solid rgba(255,69,0,0.2)" }}>
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="font-bold text-base" style={{ color: "var(--text)" }}>{activeProfile.name}</p>
+                          <button onClick={() => openEdit(activeProfile)} className="text-xs font-semibold px-3 py-1 rounded-full" style={{ backgroundColor: "rgba(255,69,0,0.1)", color: "#FF7A00" }}>
+                            Edit
+                          </button>
+                        </div>
+
+                        <div className="flex flex-wrap gap-1.5 mb-3">
+                          <Badge>{activeProfile.preferences.diet === "veg" ? "🥗 Veg" : activeProfile.preferences.diet === "nonveg" ? "🍖 Non-veg" : "🍽️ Both"}</Badge>
+                          <Badge>{activeProfile.preferences.priceRange === "budget" ? "💰 Budget" : activeProfile.preferences.priceRange === "mid" ? "🍴 Mid-range" : "💎 Premium"}</Badge>
+                        </div>
+
+                        {activeProfile.addresses.length > 0 && (
+                          <div className="mb-2">
+                            <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>Addresses</p>
+                            <div className="flex flex-wrap gap-1">
+                              {activeProfile.addresses.map((a) => (
+                                <span key={a.addressId} className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: "var(--surface-2)", color: "var(--text)" }}>
+                                  📍 {a.label}
+                                </span>
+                              ))}
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
+                        )}
+
+                        {activeProfile.preferences.likes.length > 0 && (
+                          <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>
+                            Likes: <span style={{ color: "var(--text)" }}>{activeProfile.preferences.likes.join(", ")}</span>
+                          </p>
+                        )}
+                        {activeProfile.preferences.dislikes.length > 0 && (
+                          <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>
+                            Dislikes: <span style={{ color: "var(--text)" }}>{activeProfile.preferences.dislikes.join(", ")}</span>
+                          </p>
+                        )}
+                        {activeProfile.preferences.notes?.trim() && (
+                          <p className="text-xs mb-2" style={{ color: "var(--text-muted)" }}>
+                            Note: <span style={{ color: "var(--text)" }}>{activeProfile.preferences.notes}</span>
+                          </p>
+                        )}
+
+                        {(activeProfile.memories?.length ?? 0) > 0 && (
+                          <div>
+                            <button onClick={() => setShowMemories((v) => !v)} className="text-xs font-medium" style={{ color: "#FF7A00" }}>
+                              🧠 Aaru knows {activeProfile.memories!.length} thing{activeProfile.memories!.length !== 1 ? "s" : ""} about you {showMemories ? "▴" : "▾"}
+                            </button>
+                            {showMemories && (
+                              <ul className="mt-2 space-y-1">
+                                {activeProfile.memories!.map((m, i) => (
+                                  <li key={i} className="text-xs pl-2" style={{ color: "var(--text-muted)", borderLeft: "2px solid rgba(255,69,0,0.3)" }}>{m}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+
+                        {activeProfile.pastOrders.length > 0 && (
+                          <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                            <p className="text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Recent orders</p>
+                            {activeProfile.pastOrders.slice(0, 3).map((o, i) => (
+                              <p key={i} className="text-xs" style={{ color: "var(--text)" }}>
+                                {o.itemName} <span style={{ color: "var(--text-muted)" }}>· {o.restaurantName} · ₹{o.price}</span>
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </section>
                   )}
-                  {editingProfile.addresses.length > 1 && (
-                    <div className="mt-3">
-                      <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>Default delivery address</p>
-                      <div className="flex gap-2 flex-wrap">
-                        {editingProfile.addresses.map((a) => (
-                          <button
-                            key={a.addressId}
-                            onClick={() => setEditingProfile({ ...editingProfile, defaultAddressId: a.addressId })}
-                            className="px-2 py-1 rounded-lg text-xs font-medium transition-all"
-                            style={editingProfile.defaultAddressId === a.addressId ? {
-                              background: "linear-gradient(135deg, #FF4500, #FF7A00)",
-                              color: "white",
-                            } : {
-                              backgroundColor: "var(--surface-2)",
-                              color: "var(--text-muted)",
-                              border: "1px solid var(--border)",
-                            }}
-                          >
-                            {a.label}
+
+                  {/* Other people */}
+                  {others.length > 0 && (
+                    <section className="mb-5">
+                      <Label>People you order for</Label>
+                      <div className="space-y-2">
+                        {others.map((p) => (
+                          <div key={p.id} className="rounded-2xl p-3 flex items-center justify-between gap-3" style={{ backgroundColor: "var(--surface)", border: "1px solid var(--border)" }}>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-semibold text-sm" style={{ color: "var(--text)" }}>{p.name}</p>
+                              <p className="text-xs mt-0.5 truncate" style={{ color: "var(--text-muted)" }}>
+                                {p.preferences.diet === "veg" ? "🥗" : p.preferences.diet === "nonveg" ? "🍖" : "🍽️"}{" "}
+                                {p.addresses.length > 0 ? `· ${p.addresses.map(a => a.label).join(", ")}` : "· No address"}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <button onClick={() => { onProfileChange(p); setOpen(false); }} className="text-xs font-medium px-2.5 py-1 rounded-full" style={{ backgroundColor: "rgba(255,69,0,0.1)", color: "#FF7A00" }}>
+                                Switch
+                              </button>
+                              <button onClick={() => openEdit(p)} className="text-xs" style={{ color: "var(--text-muted)" }}>Edit</button>
+                              <button onClick={() => handleDelete(p.id)} className="text-xs" style={{ color: "#EF4444" }}>✕</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                  {/* Add person */}
+                  <section>
+                    <Label>Add someone</Label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text" value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && handleAddPerson()}
+                        placeholder="Name (e.g. Priya, Mom, Partner)"
+                        className="flex-1 px-3 py-2.5 rounded-xl text-sm focus:outline-none placeholder:opacity-40"
+                        style={{ backgroundColor: "var(--surface)", border: "1px solid var(--border)", color: "var(--text)" }}
+                      />
+                      <button onClick={handleAddPerson} disabled={!newName.trim()}
+                        className="px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-40"
+                        style={{ background: "linear-gradient(135deg,#FF4500,#FF7A00)" }}>
+                        Add
+                      </button>
+                    </div>
+                    <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
+                      Tell Aaru their preferences in conversation — it learns automatically.
+                    </p>
+                  </section>
+                </div>
+              )}
+
+              {/* ── EDIT VIEW ─────────────────────────────────────────────── */}
+              {view === "edit" && draft && (
+                <div className="px-4 pb-8">
+                  <div className="flex items-center gap-3 py-3 mb-2">
+                    <button onClick={cancelEdit} className="text-sm font-medium" style={{ color: "#FF7A00" }}>← Back</button>
+                    <h2 className="font-bold text-base flex-1" style={{ color: "var(--text)" }}>
+                      {draft.id === activeProfile?.id ? "Your preferences" : `Edit ${draft.name}`}
+                    </h2>
+                    {draft.id !== activeProfile?.id && (
+                      <button onClick={() => handleDelete(draft.id)} className="text-xs px-2 py-1 rounded-full" style={{ color: "#EF4444", backgroundColor: "rgba(239,68,68,0.08)" }}>
+                        Remove
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-5">
+                    {/* Name */}
+                    <Field label="Name">
+                      <input type="text" value={draft.name}
+                        onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                        placeholder="e.g. Devesh, Divya, Mom"
+                        className="w-full rounded-xl px-4 py-2.5 text-sm placeholder:opacity-40 focus:outline-none"
+                        style={{ backgroundColor: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text)" }}
+                      />
+                    </Field>
+
+                    {/* Addresses */}
+                    {preloadedAddresses.length > 0 && (
+                      <Field label="Delivery Addresses">
+                        <div className="space-y-2">
+                          {preloadedAddresses.map((addr) => {
+                            const linked = draft.addresses.find((a) => a.addressId === addr.address_id);
+                            return (
+                              <div key={addr.address_id} className="flex items-start gap-2">
+                                <button onClick={() => toggleAddress(addr)}
+                                  className="mt-0.5 w-5 h-5 rounded flex-shrink-0 flex items-center justify-center text-xs transition-all"
+                                  style={linked ? { backgroundColor: "var(--accent)", border: "2px solid var(--accent)", color: "white" }
+                                               : { backgroundColor: "var(--surface-2)", border: "2px solid var(--border)" }}>
+                                  {linked && "✓"}
+                                </button>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>{addr.location_name}</p>
+                                  {linked && (
+                                    <input type="text" value={linked.label}
+                                      onChange={(e) => updateAddressLabel(addr.address_id, e.target.value)}
+                                      placeholder="Label (Home, Office…)"
+                                      className="mt-1 w-full text-xs rounded-lg px-2 py-1 focus:outline-none"
+                                      style={{ backgroundColor: "rgba(255,69,0,0.07)", border: "1px solid rgba(255,69,0,0.25)", color: "var(--text)" }}
+                                    />
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {draft.addresses.length > 1 && (
+                          <div className="mt-3">
+                            <p className="text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Default address</p>
+                            <div className="flex gap-2 flex-wrap">
+                              {draft.addresses.map((a) => (
+                                <button key={a.addressId}
+                                  onClick={() => setDraft({ ...draft, defaultAddressId: a.addressId })}
+                                  className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all"
+                                  style={draft.defaultAddressId === a.addressId ? active : surface}>
+                                  {a.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </Field>
+                    )}
+
+                    {/* Diet */}
+                    <Field label="Diet">
+                      <div className="flex gap-2">
+                        {DIET_OPTIONS.map((d) => (
+                          <button key={d} onClick={() => setDraft({ ...draft, preferences: { ...draft.preferences, diet: d } })}
+                            className={pill} style={draft.preferences.diet === d ? active : surface}>
+                            {d === "veg" ? "🥗 Veg" : d === "nonveg" ? "🍖 Non-veg" : "🍽️ Both"}
                           </button>
                         ))}
                       </div>
-                    </div>
-                  )}
-                </div>
+                    </Field>
 
-                {/* Diet */}
-                <div>
-                  <SectionLabel>Diet</SectionLabel>
-                  <div className="flex gap-2">
-                    {DIET_OPTIONS.map((d) => (
-                      <button
-                        key={d}
-                        onClick={() =>
-                          setEditingProfile({
-                            ...editingProfile,
-                            preferences: { ...editingProfile.preferences, diet: d },
-                          })
-                        }
-                        className={pillBase}
-                        style={editingProfile.preferences.diet === d ? {
-                          background: "linear-gradient(135deg, #FF4500, #FF7A00)",
-                          color: "white",
-                        } : {
-                          backgroundColor: "var(--surface-2)",
-                          color: "var(--text-muted)",
-                          border: "1px solid var(--border)",
-                        }}
-                      >
-                        {d === "veg" ? "🥗 Veg" : d === "nonveg" ? "🍖 Non-veg" : "🍽️ Both"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Budget */}
-                <div>
-                  <SectionLabel>Budget</SectionLabel>
-                  <div className="flex gap-2">
-                    {PRICE_OPTIONS.map((p) => (
-                      <button
-                        key={p}
-                        onClick={() =>
-                          setEditingProfile({
-                            ...editingProfile,
-                            preferences: { ...editingProfile.preferences, priceRange: p },
-                          })
-                        }
-                        className={pillBase}
-                        style={editingProfile.preferences.priceRange === p ? {
-                          background: "linear-gradient(135deg, #FF4500, #FF7A00)",
-                          color: "white",
-                        } : {
-                          backgroundColor: "var(--surface-2)",
-                          color: "var(--text-muted)",
-                          border: "1px solid var(--border)",
-                        }}
-                      >
-                        {p === "budget" ? "💰 Budget" : p === "mid" ? "🍴 Mid" : "💎 Premium"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Likes */}
-                <div>
-                  <SectionLabel>Likes</SectionLabel>
-                  <div className="flex flex-wrap gap-2">
-                    {LIKE_CHIPS.map((chip) => (
-                      <button
-                        key={chip}
-                        onClick={() =>
-                          setEditingProfile({
-                            ...editingProfile,
-                            preferences: {
-                              ...editingProfile.preferences,
-                              likes: toggleChip(editingProfile.preferences.likes, chip),
-                            },
-                          })
-                        }
-                        className="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
-                        style={editingProfile.preferences.likes.includes(chip) ? {
-                          backgroundColor: "rgba(255,69,0,0.12)",
-                          border: "1px solid rgba(255,69,0,0.3)",
-                          color: "#FF7A00",
-                        } : {
-                          backgroundColor: "var(--surface-2)",
-                          color: "var(--text-muted)",
-                          border: "1px solid var(--border)",
-                        }}
-                      >
-                        {chip}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Dislikes */}
-                <div>
-                  <SectionLabel>Dislikes</SectionLabel>
-                  <div className="flex flex-wrap gap-2">
-                    {DISLIKE_CHIPS.map((chip) => (
-                      <button
-                        key={chip}
-                        onClick={() =>
-                          setEditingProfile({
-                            ...editingProfile,
-                            preferences: {
-                              ...editingProfile.preferences,
-                              dislikes: toggleChip(editingProfile.preferences.dislikes, chip),
-                            },
-                          })
-                        }
-                        className="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
-                        style={editingProfile.preferences.dislikes.includes(chip) ? {
-                          backgroundColor: "rgba(239,68,68,0.12)",
-                          border: "1px solid rgba(239,68,68,0.3)",
-                          color: "#EF4444",
-                        } : {
-                          backgroundColor: "var(--surface-2)",
-                          color: "var(--text-muted)",
-                          border: "1px solid var(--border)",
-                        }}
-                      >
-                        {chip}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Notes */}
-                <div>
-                  <SectionLabel>Notes for Aaru</SectionLabel>
-                  <textarea
-                    value={editingProfile.preferences.notes}
-                    onChange={(e) =>
-                      setEditingProfile({
-                        ...editingProfile,
-                        preferences: { ...editingProfile.preferences, notes: e.target.value },
-                      })
-                    }
-                    placeholder={`e.g. "Doesn't like sweets in periods", "Lactose intolerant"`}
-                    rows={2}
-                    className="w-full rounded-xl px-4 py-2.5 text-sm placeholder:opacity-40 focus:outline-none resize-none"
-                    style={inputStyle}
-                    onFocus={(e) => (e.currentTarget.style.boxShadow = "0 0 0 2px rgba(255,69,0,0.3)")}
-                    onBlur={(e) => (e.currentTarget.style.boxShadow = "none")}
-                  />
-                  <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-                    Aaru remembers this when ordering for {editingProfile.name || "this person"}
-                  </p>
-                </div>
-
-                {/* Past orders */}
-                {!isAddingNew && (
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <SectionLabel>Recent Orders</SectionLabel>
-                      <button
-                        onClick={syncOrdersToProfile}
-                        disabled={loadingOrders}
-                        className="text-xs disabled:opacity-40 transition-opacity hover:opacity-70"
-                        style={{ color: "#FF7A00" }}
-                      >
-                        {loadingOrders ? "Syncing..." : "Sync from Zomato ↻"}
-                      </button>
-                    </div>
-                    {loadingOrders ? (
-                      <p className="text-xs animate-pulse" style={{ color: "var(--text-muted)" }}>Fetching from Zomato...</p>
-                    ) : (editingProfile.pastOrders.length > 0 || pastOrders.length > 0) ? (
-                      <div className="space-y-1.5">
-                        {(editingProfile.pastOrders.length > 0 ? editingProfile.pastOrders : pastOrders).slice(0, 5).map((o, i) => (
-                          <div
-                            key={i}
-                            className="flex justify-between text-xs px-3 py-2 rounded-lg"
-                            style={{ backgroundColor: "var(--surface-2)" }}
-                          >
-                            <span style={{ color: "var(--text)" }}>{o.itemName} — <span style={{ color: "var(--text-muted)" }}>{o.restaurantName}</span></span>
-                            <span style={{ color: "var(--text-muted)" }}>₹{o.price}</span>
-                          </div>
+                    {/* Budget */}
+                    <Field label="Budget">
+                      <div className="flex gap-2">
+                        {PRICE_OPTIONS.map((p) => (
+                          <button key={p} onClick={() => setDraft({ ...draft, preferences: { ...draft.preferences, priceRange: p } })}
+                            className={pill} style={draft.preferences.priceRange === p ? active : surface}>
+                            {p === "budget" ? "💰 Budget" : p === "mid" ? "🍴 Mid" : "💎 Premium"}
+                          </button>
                         ))}
                       </div>
-                    ) : (
-                      <p className="text-xs" style={{ color: "var(--text-muted)" }}>No orders synced yet. Tap "Sync from Zomato" above.</p>
-                    )}
-                  </div>
-                )}
-              </div>
+                    </Field>
 
-              {/* Footer */}
-              <div className="p-5 pt-0 flex gap-3">
-                <button
-                  onClick={() => setEditingProfile(null)}
-                  className="flex-1 py-3 rounded-2xl text-sm font-semibold transition-all"
-                  style={{ border: "1px solid var(--border)", color: "var(--text-muted)" }}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    if (!editingProfile.name.trim()) return;
-                    persistProfile(editingProfile);
-                  }}
-                  disabled={!editingProfile.name.trim()}
-                  className="flex-1 py-3 rounded-2xl text-white text-sm font-semibold disabled:opacity-40 transition-opacity hover:opacity-90"
-                  style={{ background: "linear-gradient(135deg, #FF4500, #FF7A00)" }}
-                >
-                  Save
-                </button>
-              </div>
+                    {/* Likes */}
+                    <Field label="Likes">
+                      <div className="flex flex-wrap gap-2">
+                        {LIKE_CHIPS.map((chip) => {
+                          const on = draft.preferences.likes.includes(chip);
+                          return (
+                            <button key={chip}
+                              onClick={() => setDraft({ ...draft, preferences: { ...draft.preferences, likes: toggleChip(draft.preferences.likes, chip) } })}
+                              className="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
+                              style={on ? { backgroundColor: "rgba(255,69,0,0.12)", border: "1px solid rgba(255,69,0,0.3)", color: "#FF7A00" } : surface}>
+                              {chip}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </Field>
+
+                    {/* Dislikes */}
+                    <Field label="Dislikes">
+                      <div className="flex flex-wrap gap-2">
+                        {DISLIKE_CHIPS.map((chip) => {
+                          const on = draft.preferences.dislikes.includes(chip);
+                          return (
+                            <button key={chip}
+                              onClick={() => setDraft({ ...draft, preferences: { ...draft.preferences, dislikes: toggleChip(draft.preferences.dislikes, chip) } })}
+                              className="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
+                              style={on ? { backgroundColor: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", color: "#EF4444" } : surface}>
+                              {chip}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </Field>
+
+                    {/* Notes */}
+                    <Field label="Notes for Aaru">
+                      <textarea value={draft.preferences.notes}
+                        onChange={(e) => setDraft({ ...draft, preferences: { ...draft.preferences, notes: e.target.value } })}
+                        placeholder={`e.g. "Lactose intolerant", "Doesn't eat onions"`}
+                        rows={2}
+                        className="w-full rounded-xl px-4 py-2.5 text-sm placeholder:opacity-40 focus:outline-none resize-none"
+                        style={{ backgroundColor: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text)" }}
+                      />
+                    </Field>
+
+                    {/* Memories (read-only) */}
+                    {(draft.memories?.length ?? 0) > 0 && (
+                      <Field label="What Aaru has learned">
+                        <ul className="space-y-1.5">
+                          {draft.memories!.map((m, i) => (
+                            <li key={i} className="text-xs px-3 py-1.5 rounded-lg" style={{ backgroundColor: "var(--surface-2)", color: "var(--text-muted)" }}>
+                              🧠 {m}
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Learned from conversations — updates automatically.</p>
+                      </Field>
+                    )}
+
+                    {/* Actions */}
+                    <div className="flex gap-3 pt-2">
+                      <button onClick={cancelEdit}
+                        className="flex-1 py-3 rounded-2xl text-sm font-semibold"
+                        style={{ border: "1px solid var(--border)", color: "var(--text-muted)" }}>
+                        Cancel
+                      </button>
+                      <button onClick={saveEdit} disabled={!draft.name.trim()}
+                        className="flex-1 py-3 rounded-2xl text-white text-sm font-semibold disabled:opacity-40"
+                        style={{ background: "linear-gradient(135deg,#FF4500,#FF7A00)" }}>
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </motion.div>
-          </>
+          </motion.div>
         )}
       </AnimatePresence>
     </>
   );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function Label({ children }: { children: React.ReactNode }) {
+  return <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>{children}</p>;
+}
+
+function Badge({ children }: { children: React.ReactNode }) {
   return (
-    <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>
+    <span className="text-xs px-2.5 py-1 rounded-full" style={{ backgroundColor: "var(--surface-2)", color: "var(--text)", border: "1px solid var(--border)" }}>
       {children}
-    </p>
+    </span>
   );
 }
 
-function extractCity(locationName: string): string {
-  const parts = locationName.split(",");
-  for (const part of parts.reverse()) {
-    const trimmed = part.trim();
-    if (trimmed && trimmed.length > 2 && !trimmed.match(/^\d/)) return trimmed;
-  }
-  return "Delhi";
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>{label}</p>
+      {children}
+    </div>
+  );
 }

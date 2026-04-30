@@ -228,12 +228,7 @@ export default function ChatPage() {
   useEffect(() => {
     const existing = getAllProfiles();
 
-    if (existing.length > 0) {
-      setAllProfiles(existing);
-      setActiveProfile(existing[0]);
-      fetch("/api/addresses").then((r) => r.json()).then(setPreloadedAddresses).catch(() => {});
-      // Sync memories from KV (cross-device source of truth)
-      const profile = existing[0];
+    function syncMemoriesForProfile(profile: PersonProfile) {
       fetch(`/api/memories?profileName=${encodeURIComponent(profile.name)}`)
         .then((r) => r.json())
         .then(({ memories }: { memories: string[] }) => {
@@ -243,11 +238,49 @@ export default function ChatPage() {
           }
         })
         .catch(() => {});
+    }
+
+    if (existing.length > 0) {
+      setAllProfiles(existing);
+      setActiveProfile(existing[0]);
+      fetch("/api/addresses").then((r) => r.json()).then(setPreloadedAddresses).catch(() => {});
+      syncMemoriesForProfile(existing[0]);
+      // Merge in any additional profiles from KV (e.g. added on another device)
+      fetch("/api/profiles")
+        .then((r) => r.json())
+        .then(({ profiles: kvProfiles }: { profiles: PersonProfile[] }) => {
+          if (!Array.isArray(kvProfiles) || kvProfiles.length === 0) return;
+          const localIds = new Set(getAllProfiles().map((p) => p.id));
+          const newOnes = kvProfiles.filter((p) => !localIds.has(p.id));
+          if (newOnes.length > 0) {
+            newOnes.forEach(saveProfile);
+            setAllProfiles(getAllProfiles());
+          }
+        })
+        .catch(() => {});
       return;
     }
 
+    // No local profiles — check KV first before seeding from Zomato
     setIsSeeding(true);
-    Promise.all([
+    fetch("/api/profiles")
+      .then((r) => r.json())
+      .then(({ profiles: kvProfiles }: { profiles: PersonProfile[] }) => {
+        if (Array.isArray(kvProfiles) && kvProfiles.length > 0) {
+          kvProfiles.forEach(saveProfile);
+          setAllProfiles(kvProfiles);
+          setActiveProfile(kvProfiles[0]);
+          setIsSeeding(false);
+          fetch("/api/addresses").then((r) => r.json()).then(setPreloadedAddresses).catch(() => {});
+          syncMemoriesForProfile(kvProfiles[0]);
+          return;
+        }
+        seedFromZomato();
+      })
+      .catch(() => seedFromZomato());
+
+    function seedFromZomato() {
+      Promise.all([
       fetchWithTimeout<{ address_id: string; location_name: string }[]>("/api/addresses", [], 8000),
       fetchWithTimeout<{ name: string | null; diet?: string; budgetRange?: string; preferredCuisines?: string[]; allergies?: string[] }>("/api/user", { name: null }, 8000),
       fetchWithTimeout<any[]>("/api/orders", [], 8000),
@@ -315,7 +348,14 @@ export default function ChatPage() {
       setAllProfiles(allNew);
       setActiveProfile(profile);
       setIsSeeding(false);
+      // Save newly seeded profiles to KV for cross-device access
+      fetch("/api/profiles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profiles: allNew }),
+      }).catch(() => {});
     }).catch(() => setIsSeeding(false));
+    } // end seedFromZomato
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -575,6 +615,16 @@ export default function ChatPage() {
     [isVoiceMode, isTTSSpeaking]
   );
 
+  // Sync profiles to KV whenever they change (background, cross-device)
+  const handleAllProfilesChange = useCallback((updated: PersonProfile[]) => {
+    setAllProfiles(updated);
+    fetch("/api/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profiles: updated }),
+    }).catch(() => {});
+  }, []);
+
   const handleClarificationSelect = useCallback(
     (option: string) => {
       setClarification(null);
@@ -666,7 +716,7 @@ export default function ChatPage() {
             profiles={allProfiles}
             preloadedAddresses={preloadedAddresses}
             onProfileChange={setActiveProfile}
-            onAllProfilesChange={setAllProfiles}
+            onAllProfilesChange={handleAllProfilesChange}
           />
 
           {/* Settings */}
@@ -744,7 +794,7 @@ export default function ChatPage() {
                 const updated = { ...activeProfile, name };
                 saveProfile(updated);
                 setActiveProfile(updated);
-                setAllProfiles(getAllProfiles());
+                handleAllProfilesChange(getAllProfiles());
               }}
             />
           </motion.div>

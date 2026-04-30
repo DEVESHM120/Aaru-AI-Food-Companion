@@ -8,6 +8,7 @@
     "src/app/api/swiggy-orders/route.ts": { "maxDuration": 30 },
     "src/app/api/contacts/route.ts": { "maxDuration": 30 },
     "src/app/api/extract-memory/route.ts": { "maxDuration": 15 },
-    "src/app/api/memories/route.ts": { "maxDuration": 10 }
+    "src/app/api/memories/route.ts": { "maxDuration": 10 },
+    "src/app/api/profiles/route.ts": { "maxDuration": 10 }
   }
 }
