@@ -17,11 +17,16 @@ import SettingsModal from "@/components/SettingsModal";
 import SetupWizard, { UserKeys } from "@/components/SetupWizard";
 import type { VoiceInputHandle } from "@/components/VoiceInput";
 import TrialBanner from "@/components/TrialBanner";
+import CartDrawer from "@/components/CartDrawer";
+import InstamartGrid from "@/components/InstamartGrid";
+import DineoutPicker from "@/components/DineoutPicker";
+import OrderTracker from "@/components/OrderTracker";
 import {
   Message, InputMode, Restaurant, OrderDetails,
   WeatherContext, VoiceState, QuickChip, Dish, ClarificationBlock,
+  CartBlock, InstamartBlock, DineoutBlock, OrderStatusBlock,
 } from "@/lib/types";
-import { PersonProfile, PersonAddress } from "@/lib/profiles/types";
+import { PersonProfile, PersonAddress, PastOrder } from "@/lib/profiles/types";
 import { getAllProfiles, saveProfile, newProfileId, addMemory, setMemories } from "@/lib/profiles/store";
 
 const WELCOME: Message = {
@@ -152,6 +157,16 @@ export default function ChatPage() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [trialUsed, setTrialUsed] = useState(0);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [cart, setCart] = useState<CartBlock | null>(null);
+  const [instamartItems, setInstamartItems] = useState<InstamartBlock | null>(null);
+  const [dineoutOptions, setDineoutOptions] = useState<DineoutBlock | null>(null);
+  const [activeOrder, setActiveOrder] = useState<OrderStatusBlock | null>(null);
+  const [tokenExpired, setTokenExpired] = useState(false);
+
+  // Onboarding state machine
+  type OnboardingStep = null | "diet" | "budget" | "cuisines" | "done";
+  const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>(null);
+  const [onboardingTargetId, setOnboardingTargetId] = useState<string>("");
 
   const isThinking = voiceState === "thinking";
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -482,6 +497,15 @@ export default function ChatPage() {
             try {
               const event = JSON.parse(raw);
 
+              if (event.type === "token_expired") {
+                setTokenExpired(true);
+                setMessages((prev) =>
+                  prev.map((m) => m.id === aiId ? { ...m, content: "Your Swiggy/Zomato session expired. Reconnect in Settings to continue ordering.", streaming: false } : m)
+                );
+                setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
+                gotDone = true;
+              }
+
               if (event.type === "error") {
                 setMessages((prev) =>
                   prev.map((m) => m.id === aiId ? { ...m, content: event.message || "Something went wrong. Try again!", streaming: false } : m)
@@ -536,6 +560,10 @@ export default function ChatPage() {
                 if (event.dishes) setDishes(event.dishes);
                 if (event.orderDetails) handleOrderSelect(event.orderDetails);
                 if (event.clarification) setClarification(event.clarification);
+                if (event.instamartItems) setInstamartItems(event.instamartItems);
+                if (event.dineoutVenues) setDineoutOptions(event.dineoutVenues);
+                if (event.cart) setCart(event.cart);
+                if (event.orderStatus) setActiveOrder(event.orderStatus);
 
                 if (mode === "voice" && event.shouldSpeak && event.cleanText) {
                   try {
@@ -633,6 +661,88 @@ export default function ChatPage() {
     [sendMessage, isVoiceMode]
   );
 
+  // ── Onboarding helpers ────────────────────────────────────────────────────────
+  function injectAaruMessage(content: string) {
+    setMessages((prev) => [
+      ...prev,
+      { id: `onboarding-${Date.now()}`, role: "assistant", content, timestamp: new Date() },
+    ]);
+  }
+
+  const ONBOARDING_PROMPTS: Record<string, string> = {
+    diet: "Quick one — are you veg, non-veg, or do you eat both? (Tap to skip anytime)",
+    budget: "What's your usual budget per meal?",
+    cuisines: "Any cuisines you love? Pick all that apply, then tap Done.",
+    done: "Got it! I'll keep these in mind for every recommendation. So — what are you craving? 🍱",
+  };
+
+  function getOnboardingChips(step: string): string[] {
+    if (step === "diet") return ["🥦 Veg", "🍗 Non-veg", "🍽️ Both", "Skip"];
+    if (step === "budget") return ["💰 Budget (<₹200)", "🍴 Mid (₹200–500)", "✨ Premium (₹500+)", "Skip"];
+    if (step === "cuisines") return ["🍛 Indian", "🍕 Pizza", "🍜 Chinese", "🥙 Mughlai", "🥗 Healthy", "🍔 Fast food", "Done"];
+    return [];
+  }
+
+  const handleOnboardingAnswer = useCallback((value: string) => {
+    const profile = getAllProfiles().find((p) => p.id === onboardingTargetId) ?? activeProfile;
+    if (!profile) return;
+
+    if (value !== "Skip" && value !== "Done") {
+      if (onboardingStep === "diet") {
+        const diet: "veg" | "nonveg" | "both" = value.includes("Non") ? "nonveg" : value.includes("Veg") ? "veg" : "both";
+        const updated = { ...profile, preferences: { ...profile.preferences, diet } };
+        saveProfile(updated);
+        if (profile.id === activeProfile?.id) setActiveProfile(updated);
+      }
+      if (onboardingStep === "budget") {
+        const priceRange: "budget" | "mid" | "premium" = value.includes("Budget") ? "budget" : value.includes("Mid") ? "mid" : "premium";
+        const updated = { ...profile, preferences: { ...profile.preferences, priceRange } };
+        saveProfile(updated);
+        if (profile.id === activeProfile?.id) setActiveProfile(updated);
+      }
+      if (onboardingStep === "cuisines") {
+        const cuisine = value.replace(/^[^\w]+/, "").trim().split(" ")[0];
+        const likes = [...new Set([...(profile.preferences.likes ?? []), cuisine])];
+        const updated = { ...profile, preferences: { ...profile.preferences, likes } };
+        saveProfile(updated);
+        if (profile.id === activeProfile?.id) setActiveProfile(updated);
+        return; // Stay on cuisines step — multiple picks until "Done"
+      }
+    }
+
+    const nextMap: Record<string, OnboardingStep> = { diet: "budget", budget: "cuisines", cuisines: "done" };
+    const nextStep = nextMap[onboardingStep ?? ""] ?? null;
+    setOnboardingStep(nextStep);
+    if (nextStep) injectAaruMessage(ONBOARDING_PROMPTS[nextStep]);
+    handleAllProfilesChange(getAllProfiles());
+  }, [onboardingStep, onboardingTargetId, activeProfile, handleAllProfilesChange]);
+
+  // Start onboarding for a given profile id
+  const startOnboarding = useCallback((profileId: string) => {
+    setOnboardingTargetId(profileId);
+    setOnboardingStep("diet");
+    injectAaruMessage(ONBOARDING_PROMPTS.diet);
+  }, []);
+
+  // ── Order status polling ───────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!activeOrder || activeOrder.status === "delivered") return;
+    const interval = setInterval(() => {
+      sendMessage(
+        `Check the current delivery status for my ${activeOrder.platform} order ${activeOrder.orderId}. Use MCP tools and return an order_status block.`,
+        "text"
+      );
+    }, 120000); // every 2 minutes
+    return () => clearInterval(interval);
+  }, [activeOrder?.orderId, activeOrder?.status]);
+
+  // Auto-dismiss orderPlaced banner after 6 seconds
+  useEffect(() => {
+    if (!orderPlaced) return;
+    const t = setTimeout(() => setOrderPlaced(null), 6000);
+    return () => clearTimeout(t);
+  }, [orderPlaced]);
+
   const toggleVoiceMode = () => {
     const next = !isVoiceMode;
     setIsVoiceMode(next);
@@ -648,13 +758,34 @@ export default function ChatPage() {
 
   const handleConfirmOrder = useCallback(async () => {
     if (!pendingOrder) return;
+
+    // Save to profile pastOrders optimistically
+    if (activeProfile) {
+      const newPastOrder: PastOrder = {
+        restaurantName: pendingOrder.restaurant.name,
+        itemName: pendingOrder.item,
+        price: pendingOrder.price,
+        platform: pendingOrder.platform,
+        orderedAt: new Date().toISOString(),
+      };
+      const updated = {
+        ...activeProfile,
+        pastOrders: [newPastOrder, ...(activeProfile.pastOrders ?? [])].slice(0, 20),
+      };
+      saveProfile(updated);
+      setActiveProfile(updated);
+      handleAllProfilesChange(getAllProfiles());
+    }
+
     setOrderPlaced(pendingOrder);
     setPendingOrder(null);
+
+    const addr = pendingOrder.deliveryAddress?.locationName ?? "my saved home address";
     await sendMessage(
-      `Yes, confirm the order from ${pendingOrder.restaurant.name} on ${pendingOrder.platform}.`,
+      `Place an order for ${pendingOrder.item} (₹${pendingOrder.price}) from ${pendingOrder.restaurant.name} on ${pendingOrder.platform} to ${addr}. Use the ${pendingOrder.platform} MCP tools to complete the order now, then return an order_status block with the orderId and status.`,
       isVoiceModeRef.current ? "voice" : "text"
     );
-  }, [pendingOrder, sendMessage]);
+  }, [pendingOrder, activeProfile, sendMessage, handleAllProfilesChange]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -801,6 +932,20 @@ export default function ChatPage() {
         )}
       </AnimatePresence>
 
+      {/* Token expired banner */}
+      <AnimatePresence>
+        {tokenExpired && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+            className="flex items-center justify-between gap-3 px-4 py-2 text-xs"
+            style={{ backgroundColor: "rgba(234,179,8,0.08)", borderBottom: "1px solid rgba(234,179,8,0.2)", color: "#CA8A04" }}
+          >
+            <span>⚠️ Swiggy/Zomato session expired — reconnect in Settings</span>
+            <button onClick={() => { setTokenExpired(false); setWizardOpen(true); }} className="font-semibold underline">Reconnect</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Order placed banner */}
       <AnimatePresence>
         {orderPlaced && (
@@ -816,10 +961,26 @@ export default function ChatPage() {
             }}
           >
             <span>
-              🎉 Ordered from <strong>{orderPlaced.restaurant.name}</strong> via {orderPlaced.platform}! ~{orderPlaced.estimatedDelivery} min.
+              🎉 Ordering from <strong>{orderPlaced.restaurant.name}</strong> via {orderPlaced.platform} — ~{orderPlaced.estimatedDelivery} min delivery
             </span>
             <button onClick={() => setOrderPlaced(null)} className="text-lg ml-4 opacity-60 hover:opacity-100">×</button>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Order tracker — live delivery status */}
+      <AnimatePresence>
+        {activeOrder && (
+          <OrderTracker
+            order={activeOrder}
+            onViewInApp={() => {
+              const url = activeOrder.platform === "swiggy"
+                ? `https://www.swiggy.com/order/${activeOrder.orderId}`
+                : `https://www.zomato.com/order/${activeOrder.orderId}`;
+              window.open(url, "_blank", "noopener,noreferrer");
+            }}
+            onDismiss={() => setActiveOrder(null)}
+          />
         )}
       </AnimatePresence>
 
@@ -910,6 +1071,46 @@ export default function ChatPage() {
               options={clarification.options}
               onSelect={handleClarificationSelect}
               disabled={isThinking}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Onboarding preference chips */}
+        <AnimatePresence>
+          {onboardingStep && onboardingStep !== "done" && !isThinking && (
+            <ClarificationChips
+              question=""
+              options={getOnboardingChips(onboardingStep)}
+              onSelect={handleOnboardingAnswer}
+              disabled={isThinking}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Instamart grocery grid */}
+        <AnimatePresence>
+          {instamartItems && !isThinking && (
+            <InstamartGrid
+              data={instamartItems}
+              onAddItem={(itemName) => {
+                sendMessage(`Add ${itemName} to my Instamart cart`, "text");
+              }}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Dineout restaurant picker */}
+        <AnimatePresence>
+          {dineoutOptions && !isThinking && (
+            <DineoutPicker
+              data={dineoutOptions}
+              onBook={(restaurantName, slot, partySize, date) => {
+                sendMessage(
+                  `Book a table for ${partySize} at ${restaurantName} at ${slot}${date ? ` on ${date}` : " today"} using Swiggy Dineout MCP tools.`,
+                  "text"
+                );
+                setDineoutOptions(null);
+              }}
             />
           )}
         </AnimatePresence>
@@ -1011,6 +1212,21 @@ export default function ChatPage() {
         </form>
       </div>
 
+      {/* Cart drawer */}
+      {cart && (
+        <CartDrawer
+          cart={cart}
+          onCheckout={() => {
+            sendMessage(
+              `Checkout and place the order for ${cart.items.map((i) => i.dishName).join(", ")} from ${cart.restaurantName} on ${cart.platform} to my home address. Use ${cart.platform} MCP tools to complete the order and return an order_status block.`,
+              "text"
+            );
+            setCart(null);
+          }}
+          onClear={() => setCart(null)}
+        />
+      )}
+
       {/* Address picker sheet — shown before OrderConfirmation when user has multiple addresses */}
       {pendingOrderNoAddr && activeProfile && (
         <AddressPickerSheet
@@ -1034,7 +1250,14 @@ export default function ChatPage() {
 
       <SetupWizard
         open={wizardOpen}
-        onClose={(keys) => { setUserKeys(keys); setWizardOpen(false); }}
+        onClose={(keys) => {
+          setUserKeys(keys);
+          setWizardOpen(false);
+          // Start preference onboarding for new users with no prefs set
+          if (activeProfile && activeProfile.preferences.likes.length === 0 && !activeProfile.preferences.notes) {
+            setTimeout(() => startOnboarding(activeProfile.id), 400);
+          }
+        }}
         initialStep={trialExhausted ? 1 : 0}
       />
     </div>

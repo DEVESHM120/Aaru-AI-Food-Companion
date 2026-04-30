@@ -76,3 +76,54 @@ export interface ClarificationBlock {
   question: string;
   options: string[];
 }
+
+export interface CartItem {
+  dishName: string;
+  restaurantName: string;
+  price: number;
+  qty: number;
+  platform: "zomato" | "swiggy";
+  isVeg: boolean;
+}
+
+export interface CartBlock {
+  items: CartItem[];
+  total: number;
+  platform: "zomato" | "swiggy";
+  restaurantName: string;
+}
+
+export interface InstamartItem {
+  name: string;
+  brand: string;
+  price: number;
+  unit: string;
+  isAvailable: boolean;
+}
+
+export interface InstamartBlock {
+  items: InstamartItem[];
+  deliveryTime: number;
+}
+
+export interface DineoutRestaurant {
+  name: string;
+  cuisine: string;
+  location: string;
+  rating: number;
+  avgCost: number;
+  availableSlots: string[];
+}
+
+export interface DineoutBlock {
+  restaurants: DineoutRestaurant[];
+  bookingDate?: string;
+  partySize?: number;
+}
+
+export interface OrderStatusBlock {
+  orderId: string;
+  status: "accepted" | "preparing" | "picked_up" | "on_the_way" | "delivered";
+  eta: number;
+  platform: "zomato" | "swiggy";
+}

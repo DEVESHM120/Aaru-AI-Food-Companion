@@ -118,8 +118,9 @@ export async function POST(req: NextRequest) {
                 system: systemPrompt + SYSTEM_SUFFIX,
                 messages,
                 mcp_servers: mcpServers,
-                betas: ["mcp-client-2025-04-04"],
-              });
+                tools: mcpServers.map(s => ({ type: "mcp_toolset" as const, mcp_server_name: s.name })),
+                betas: ["mcp-client-2025-11-20"],
+              } as Parameters<typeof client.beta.messages.stream>[0]);
             } else {
               stream = client.messages.stream({
                 model: "claude-sonnet-4-6",
@@ -129,15 +130,24 @@ export async function POST(req: NextRequest) {
               });
             }
 
-            for await (const chunk of stream) {
-              if (chunk.type === "content_block_delta" && chunk.delta.type === "text_delta") {
-                const text = chunk.delta.text;
-                fullText += text;
-                // Skip chunk streaming for MCP — Claude outputs tool-reasoning text users shouldn't see
-                if (!hasMcp) {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "chunk", text })}\n\n`));
+            try {
+              for await (const chunk of stream) {
+                if (chunk.type === "content_block_delta" && chunk.delta.type === "text_delta") {
+                  const text = chunk.delta.text;
+                  fullText += text;
+                  // Skip chunk streaming for MCP — Claude outputs tool-reasoning text users shouldn't see
+                  if (!hasMcp) {
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "chunk", text })}\n\n`));
+                  }
                 }
               }
+            } catch (e: unknown) {
+              if ((e as { status?: number })?.status === 401) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "token_expired" })}\n\n`));
+                controller.close();
+                return;
+              }
+              throw e;
             }
           }
 
@@ -149,6 +159,8 @@ export async function POST(req: NextRequest) {
             .replace(/```clarification[\s\S]*?```/g, "")
             .replace(/```instamart[\s\S]*?```/g, "")
             .replace(/```dineout[\s\S]*?```/g, "")
+            .replace(/```cart[\s\S]*?```/g, "")
+            .replace(/```order_status[\s\S]*?```/g, "")
             .trim();
 
           const parse = (re: RegExp) => { try { const m = fullText.match(re); return m ? JSON.parse(m[1]) : null; } catch { return null; } };
@@ -162,6 +174,8 @@ export async function POST(req: NextRequest) {
             clarification: parse(/```clarification\n([\s\S]*?)\n```/),
             instamartItems: parse(/```instamart\n([\s\S]*?)\n```/),
             dineoutVenues: parse(/```dineout\n([\s\S]*?)\n```/),
+            cart: parse(/```cart\n([\s\S]*?)\n```/),
+            orderStatus: parse(/```order_status\n([\s\S]*?)\n```/),
             hasMcp,
             shouldSpeak: inputMode === "voice",
           })}\n\n`));

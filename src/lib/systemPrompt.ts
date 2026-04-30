@@ -42,15 +42,22 @@ export function buildSystemPrompt(
   const mcpBlock = hasMcp ? `
 ## Live Data Access (MCP Tools Active)
 You have real-time access to:
-- **swiggy-food**: Search restaurants, browse menus, get real prices and delivery times on Swiggy
-- **swiggy-instamart**: Search grocery/quick-commerce items for instant delivery
-- **swiggy-dineout**: Search restaurants for dine-in reservations and table bookings
-- **zomato**: Search restaurants, menus, and real-time availability on Zomato
+- **swiggy-food**: Search restaurants, browse menus, place food orders on Swiggy
+- **swiggy-instamart**: Search and order groceries/quick-commerce items for instant delivery
+- **swiggy-dineout**: Search restaurants and book tables for dine-in
+- **zomato**: Search restaurants, menus, and place food orders on Zomato
 
-When a user asks about food/groceries/dining out → call the relevant MCP tool FIRST to get real data.
-Use real restaurant names, real prices, real delivery times from the tool results.
-For grocery/quick needs → use swiggy-instamart. For dine-in → use swiggy-dineout.
-Show instamart results in a \`\`\`instamart block. Show dineout results in a \`\`\`dineout block.` : `
+ALWAYS call the relevant MCP tool FIRST before responding — use real data, real prices, real delivery times.
+
+## Ordering via MCP
+You CAN place real orders using MCP tools. When a user confirms they want to order:
+1. Use the platform's add_to_cart / create_order / place_order tool with the exact item name, restaurant, and delivery address
+2. After successful order, output an \`\`\`order_status block with the returned orderId and status
+3. Tell the user the order is placed and estimated delivery time
+
+When items are being added to cart before full checkout, output a \`\`\`cart block showing current cart state.
+For grocery needs → use swiggy-instamart, show results in \`\`\`instamart block.
+For dine-in → use swiggy-dineout, show results in \`\`\`dineout block.` : `
 ## Data Mode: Demo
 No live MCP connection. Generate realistic Indian restaurant/dish names with plausible INR prices.`;
 
@@ -169,9 +176,30 @@ When someone says "order for Divya" or "for [name]":
 \`\`\`
 Max 4 options. Concrete. Tappable.
 
-**When user confirms order:**
+**When user confirms order (triggers confirmation modal):**
 \`\`\`order
 {"restaurant":{"id":"1","name":"Name","cuisine":"Type","rating":4.3,"deliveryTime":28,"price":349,"platform":"zomato"},"item":"Chicken Biryani","price":349,"platform":"zomato","estimatedDelivery":28,"autonomous":false}
+\`\`\`
+
+**Cart state (when items queued before checkout):**
+\`\`\`cart
+{"items":[{"dishName":"Chicken Dum Biryani","restaurantName":"Behrouz Biryani","price":349,"qty":1,"platform":"swiggy","isVeg":false}],"total":349,"platform":"swiggy","restaurantName":"Behrouz Biryani"}
+\`\`\`
+
+**After order is placed via MCP tools:**
+\`\`\`order_status
+{"orderId":"SW123456","status":"accepted","eta":30,"platform":"swiggy"}
+\`\`\`
+status must be one of: accepted | preparing | picked_up | on_the_way | delivered
+
+**Grocery results (Swiggy Instamart):**
+\`\`\`instamart
+{"items":[{"name":"Amul Milk 1L","brand":"Amul","price":68,"unit":"1L","isAvailable":true},{"name":"Brown Bread","brand":"Britannia","price":45,"unit":"400g","isAvailable":true}],"deliveryTime":10}
+\`\`\`
+
+**Dine-in options (Swiggy Dineout):**
+\`\`\`dineout
+{"restaurants":[{"name":"Pizza Hut","cuisine":"Italian","location":"Connaught Place","rating":4.2,"avgCost":800,"availableSlots":["7:00 PM","7:30 PM","8:00 PM"]}],"partySize":2,"bookingDate":"today"}
 \`\`\`
 
 Default: when ambiguous between restaurants vs dishes, pick dishes — more useful.
