@@ -2,15 +2,18 @@
 
 import { motion } from "framer-motion";
 
-const TRIAL_LIMIT = 50;
+const MSG_LIMIT = 50;
+const ORDER_LIMIT = 5;
 
 interface Props {
   used: number;
+  ordersUsed?: number;
   onUpgrade: () => void;
 }
 
-export default function TrialBanner({ used, onUpgrade }: Props) {
-  const remaining = Math.max(0, TRIAL_LIMIT - used);
+export default function TrialBanner({ used, ordersUsed = 0, onUpgrade }: Props) {
+  const msgsLeft = Math.max(0, MSG_LIMIT - used);
+  const ordersLeft = Math.max(0, ORDER_LIMIT - ordersUsed);
 
   return (
     <motion.div
@@ -23,24 +26,18 @@ export default function TrialBanner({ used, onUpgrade }: Props) {
         borderBottom: "1px solid rgba(217,119,6,0.2)",
       }}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         <span>⚡</span>
         <span style={{ color: "var(--text-muted, #78716C)" }}>
           <span className="font-semibold" style={{ color: "var(--accent, #D97706)" }}>
-            {remaining} free {remaining === 1 ? "message" : "messages"}
+            {msgsLeft} {msgsLeft === 1 ? "msg" : "msgs"}
           </span>{" "}
-          remaining in trial
+          &{" "}
+          <span className="font-semibold" style={{ color: ordersLeft <= 1 ? "#EF4444" : "var(--accent, #D97706)" }}>
+            {ordersLeft} {ordersLeft === 1 ? "order" : "orders"}
+          </span>{" "}
+          left in trial
         </span>
-        {/* progress dots */}
-        <div className="hidden sm:flex gap-1 ml-1">
-          {Array.from({ length: TRIAL_LIMIT }).map((_, i) => (
-            <div
-              key={i}
-              className="w-1.5 h-1.5 rounded-full transition-all"
-              style={{ backgroundColor: i < used ? "var(--accent, #D97706)" : "var(--border, #E7E5E4)" }}
-            />
-          ))}
-        </div>
       </div>
 
       <motion.button
@@ -49,7 +46,7 @@ export default function TrialBanner({ used, onUpgrade }: Props) {
         className="shrink-0 text-xs font-semibold px-3 py-1 rounded-full transition-all"
         style={{ backgroundColor: "var(--accent, #D97706)", color: "#fff" }}
       >
-        Set up full access →
+        Unlock full access →
       </motion.button>
     </motion.div>
   );

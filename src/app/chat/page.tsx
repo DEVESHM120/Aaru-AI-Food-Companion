@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
+import { useSession, signOut } from "next-auth/react";
 import ChatMessages from "@/components/ChatMessages";
 import VoiceInput from "@/components/VoiceInput";
 import VoiceStatusBar from "@/components/VoiceStatusBar";
@@ -17,6 +18,7 @@ import SettingsModal from "@/components/SettingsModal";
 import SetupWizard, { UserKeys } from "@/components/SetupWizard";
 import type { VoiceInputHandle } from "@/components/VoiceInput";
 import TrialBanner from "@/components/TrialBanner";
+import TrialPaywall from "@/components/TrialPaywall";
 import CartDrawer from "@/components/CartDrawer";
 import InstamartGrid from "@/components/InstamartGrid";
 import DineoutPicker from "@/components/DineoutPicker";
@@ -162,6 +164,10 @@ export default function ChatPage() {
   const [dineoutOptions, setDineoutOptions] = useState<DineoutBlock | null>(null);
   const [activeOrder, setActiveOrder] = useState<OrderStatusBlock | null>(null);
   const [tokenExpired, setTokenExpired] = useState(false);
+  const [trialOrdersUsed, setTrialOrdersUsed] = useState(0);
+  const [trialPaywallOpen, setTrialPaywallOpen] = useState(false);
+
+  const { data: session } = useSession();
 
   // Onboarding state machine
   type OnboardingStep = null | "diet" | "budget" | "cuisines" | "done";
@@ -169,6 +175,16 @@ export default function ChatPage() {
   const [onboardingTargetId, setOnboardingTargetId] = useState<string>("");
 
   const isThinking = voiceState === "thinking";
+
+  // Fetch trial order count from server on mount
+  useEffect(() => {
+    if (userKeys.anthropicKey) return; // full mode, no limit
+    fetch("/api/trial")
+      .then(r => r.json())
+      .then(({ ordersUsed }) => { if (typeof ordersUsed === "number") setTrialOrdersUsed(ordersUsed); })
+      .catch(() => {});
+  }, [userKeys.anthropicKey]);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const voiceInputRef = useRef<VoiceInputHandle>(null);
   const isVoiceModeRef = useRef(isVoiceMode);
@@ -501,6 +517,15 @@ export default function ChatPage() {
                 setTokenExpired(true);
                 setMessages((prev) =>
                   prev.map((m) => m.id === aiId ? { ...m, content: "Your Swiggy/Zomato session expired. Reconnect in Settings to continue ordering.", streaming: false } : m)
+                );
+                setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
+                gotDone = true;
+              }
+
+              if (event.type === "trial_exhausted") {
+                setTrialPaywallOpen(true);
+                setMessages((prev) =>
+                  prev.map((m) => m.id === aiId ? { ...m, content: "You've used all 5 trial orders! Add your Anthropic key to keep going.", streaming: false } : m)
                 );
                 setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
                 gotDone = true;
@@ -872,6 +897,37 @@ export default function ChatPage() {
             {theme === "dark" ? "☀️" : "🌙"}
           </motion.button>
 
+          {/* Login / Logout */}
+          {session?.user ? (
+            <motion.button
+              whileTap={{ scale: 0.93 }}
+              onClick={() => signOut({ callbackUrl: "/login" })}
+              title={`Signed in as ${session.user.email}\nClick to sign out`}
+              className="flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium transition-all"
+              style={{ backgroundColor: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text-muted)" }}
+            >
+              {session.user.image ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={session.user.image} alt="" className="w-5 h-5 rounded-full" />
+              ) : (
+                <span className="w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold"
+                  style={{ backgroundColor: "var(--accent)", color: "#fff" }}>
+                  {session.user.name?.[0] ?? session.user.email?.[0] ?? "?"}
+                </span>
+              )}
+              <span className="hidden sm:block max-w-[80px] truncate">{session.user.name ?? session.user.email}</span>
+            </motion.button>
+          ) : (
+            <motion.button
+              whileTap={{ scale: 0.93 }}
+              onClick={() => window.location.href = "/login"}
+              className="px-3 py-1 rounded-full text-xs font-semibold transition-all"
+              style={{ backgroundColor: "var(--accent)", color: "#fff" }}
+            >
+              Sign in
+            </motion.button>
+          )}
+
           {/* Weather */}
           {weather && (
             <span
@@ -887,7 +943,7 @@ export default function ChatPage() {
       {/* Trial banner */}
       <AnimatePresence>
         {!userKeys.anthropicKey && trialUsed < 50 && (
-          <TrialBanner used={trialUsed} onUpgrade={() => setWizardOpen(true)} />
+          <TrialBanner used={trialUsed} ordersUsed={trialOrdersUsed} onUpgrade={() => setWizardOpen(true)} />
         )}
       </AnimatePresence>
 
@@ -1240,6 +1296,12 @@ export default function ChatPage() {
         order={pendingOrder}
         onConfirm={handleConfirmOrder}
         onCancel={() => setPendingOrder(null)}
+      />
+
+      <TrialPaywall
+        open={trialPaywallOpen}
+        onAddKey={() => { setTrialPaywallOpen(false); setSettingsOpen(true); }}
+        onClose={() => setTrialPaywallOpen(false)}
       />
 
       <SettingsModal
