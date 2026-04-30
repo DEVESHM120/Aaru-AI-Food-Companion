@@ -142,28 +142,8 @@ export async function POST(req: NextRequest) {
 
             const agentMcpServers = buildAgentMcpServers(swiggyToken, zomatoToken);
 
-            if (agentMcpServers.length > 0) {
-              // ── Trial with real MCP: Groq + OpenAI Agents SDK ────────────
-              await Promise.all(agentMcpServers.map(s => s.connect()));
-              try {
-                const groqClient = new OpenAI({ apiKey: groqApiKey, baseURL: "https://api.groq.com/openai/v1" });
-                const agent = new Agent({
-                  name: "Aaru",
-                  instructions: systemPrompt + GROQ_SYSTEM_SUFFIX,
-                  model: new OpenAIChatCompletionsModel(groqClient, "llama-3.3-70b-versatile"),
-                  mcpServers: agentMcpServers,
-                });
-                // Build conversation as a string — simpler than converting to AgentInputItem[]
-                const history = messages.slice(0, -1).map(m => `${m.role === "user" ? "User" : "Aaru"}: ${m.content}`).join("\n");
-                const lastMsg = messages[messages.length - 1]?.content ?? "";
-                const input = history ? `${history}\nUser: ${lastMsg}` : lastMsg;
-                const result = await new Runner().run(agent, input);
-                fullText = String(result.finalOutput ?? "");
-              } finally {
-                await Promise.all(agentMcpServers.map(s => s.close().catch(() => {})));
-              }
-            } else {
-              // ── Trial without MCP: raw Groq streaming, demo data ─────────
+            const runGroqDemo = async () => {
+              // ── Pure Groq streaming — demo data, no MCP ──────────────────
               const groq = new Groq({ apiKey: groqApiKey });
               const groqStream = await groq.chat.completions.create({
                 model: "llama-3.3-70b-versatile",
@@ -181,6 +161,46 @@ export async function POST(req: NextRequest) {
                   controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "chunk", text })}\n\n`));
                 }
               }
+            };
+
+            if (agentMcpServers.length > 0) {
+              // ── Trial with real MCP: Groq + OpenAI Agents SDK ────────────
+              // On any auth failure, fall back to Groq demo mode gracefully
+              let mcpFailed = false;
+              try {
+                await Promise.all(agentMcpServers.map(s => s.connect()));
+              } catch {
+                mcpFailed = true;
+              }
+
+              if (!mcpFailed) {
+                try {
+                  const groqClient = new OpenAI({ apiKey: groqApiKey, baseURL: "https://api.groq.com/openai/v1" });
+                  const agent = new Agent({
+                    name: "Aaru",
+                    instructions: systemPrompt + GROQ_SYSTEM_SUFFIX,
+                    model: new OpenAIChatCompletionsModel(groqClient, "llama-3.3-70b-versatile"),
+                    mcpServers: agentMcpServers,
+                  });
+                  const history = messages.slice(0, -1).map(m => `${m.role === "user" ? "User" : "Aaru"}: ${m.content}`).join("\n");
+                  const lastMsg = messages[messages.length - 1]?.content ?? "";
+                  const input = history ? `${history}\nUser: ${lastMsg}` : lastMsg;
+                  const result = await new Runner().run(agent, input);
+                  fullText = String(result.finalOutput ?? "");
+                } catch {
+                  mcpFailed = true;
+                } finally {
+                  await Promise.all(agentMcpServers.map(s => s.close().catch(() => {})));
+                }
+              }
+
+              // MCP failed (expired/invalid token) → fall back to Groq demo
+              if (mcpFailed) {
+                fullText = "";
+                await runGroqDemo();
+              }
+            } else {
+              await runGroqDemo();
             }
 
             // Increment trial order count if an order was placed
