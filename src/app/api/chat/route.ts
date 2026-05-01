@@ -7,7 +7,7 @@ import { buildSystemPrompt } from "@/lib/systemPrompt";
 import { Dish, WeatherContext } from "@/lib/types";
 import { PersonProfile } from "@/lib/profiles/types";
 import { buildConversationContext, ConversationContext } from "@/lib/conversationContext";
-import { getTrialUsage, incrementTrialUsage } from "@/lib/server/trialUsage";
+import { getTrialUsage, incrementTrialUsage, TRIAL_MESSAGE_LIMIT } from "@/lib/server/trialUsage";
 
 export const maxDuration = 60;
 
@@ -528,6 +528,7 @@ export async function POST(req: NextRequest) {
         let fullText = "";
         try {
           // Trial limit check — exhausted users see a modal instead of a response
+          let trialUsed = 0;
           if (sessionEmail) {
             const trial = await getTrialUsage(sessionEmail);
             if (trial.exhausted) {
@@ -535,15 +536,22 @@ export async function POST(req: NextRequest) {
               controller.close();
               return;
             }
+            trialUsed = trial.used;
           }
 
           // Order coming soon — always intercept when no live MCP
           if ((turnContext.intent === "order_now" || turnContext.intent === "order_for_someone") && !hasMcp) {
-            const orderBlockText = "Ordering is coming very soon! Swiggy is currently reviewing Aaru's MCP integration — once approved, you'll be able to place orders entirely by voice using your own Swiggy account. Stay tuned!";
+            const remaining = TRIAL_MESSAGE_LIMIT - trialUsed;
+            const orderBlockText = `Ordering is coming very soon! Swiggy is reviewing Aaru's MCP integration — once approved, you'll place orders entirely by voice using your own Swiggy account.\n\nYou have ${remaining} trial message${remaining === 1 ? "" : "s"} left — explore more!`;
+            const suggestions = {
+              question: "What would you like to do?",
+              options: ["Explore Instamart 🛒", "Order groceries", "Find stationery 📚", "Book a dineout 🍽️"],
+            };
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({
               type: "done",
               cleanText: orderBlockText,
-              restaurants: null, dishes: null, orderDetails: null, clarification: null,
+              restaurants: null, dishes: null, orderDetails: null,
+              clarification: suggestions,
               instamartItems: null, dineoutVenues: null, cart: null, orderStatus: null,
               hasMcp: false,
               shouldSpeak: inputMode === "voice",
