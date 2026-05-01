@@ -281,6 +281,7 @@ export default function ChatPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [inAppBrowser, setInAppBrowser] = useState(false);
   const [cart, setCart] = useState<CartBlock | null>(null);
   const [instamartItems, setInstamartItems] = useState<InstamartBlock | null>(null);
   const [dineoutOptions, setDineoutOptions] = useState<DineoutBlock | null>(null);
@@ -344,6 +345,13 @@ export default function ChatPage() {
   }, []);
 
   // ── iOS AudioContext unlock — resume shared ctx on first user gesture ────────
+  useEffect(() => {
+    const ua = navigator.userAgent;
+    const isInApp = /LinkedIn|FBAN|FBAV|Instagram|Snapchat|TikTok/i.test(ua)
+      || (!!ua.match(/iPhone|iPad/) && !/(Safari|CriOS|FxiOS)/.test(ua));
+    if (isInApp) setInAppBrowser(true);
+  }, []);
+
   useEffect(() => {
     const unlock = () => {
       const ctx = getAudioCtx();
@@ -1397,6 +1405,25 @@ export default function ChatPage() {
           )}
         </div>
       </header>
+
+      {/* In-app browser banner — voice doesn't work in LinkedIn/Instagram WebView */}
+      {inAppBrowser && (
+        <div
+          className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs"
+          style={{ backgroundColor: "rgba(217,119,6,0.1)", borderBottom: "1px solid rgba(217,119,6,0.25)", color: "#92400E" }}
+        >
+          <span>🎤 Voice needs your real browser. Tap <strong>···</strong> → <strong>Open in Browser</strong> for voice to work.</span>
+          <button
+            onClick={() => {
+              try { window.open(window.location.href, "_blank"); } catch {}
+            }}
+            className="shrink-0 px-2 py-1 rounded-lg text-xs font-semibold"
+            style={{ backgroundColor: "rgba(217,119,6,0.15)", color: "#92400E" }}
+          >
+            Open
+          </button>
+        </div>
+      )}
 
       {/* Voice error banner */}
       <AnimatePresence>
