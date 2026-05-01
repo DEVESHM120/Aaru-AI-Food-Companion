@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
+const VOICE_ID = process.env.ELEVENLABS_VOICE_ID!;
+const MODEL_ID = "eleven_turbo_v2_5"; // pinned — same model across all pool keys
 
 function getKeyPool(): string[] {
   const keys: string[] = [];
@@ -26,7 +27,7 @@ async function tryKey(apiKey: string, text: string): Promise<ArrayBuffer | null>
         "Content-Type": "application/json",
         Accept: "audio/mpeg",
       },
-      body: JSON.stringify({ text, voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
+      body: JSON.stringify({ text, model_id: MODEL_ID, voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
     }
   );
   if (response.status === 401 || response.status === 429) return null; // rotate to next key

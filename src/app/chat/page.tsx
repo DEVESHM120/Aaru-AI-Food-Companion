@@ -842,7 +842,7 @@ export default function ChatPage() {
             ]);
             setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
             if (isVoiceModeRef.current) {
-              playTTS(`Got it! Saved ${raw} as your delivery address. Now what are you craving?`, userKeys.elevenLabsKey || undefined).catch(() => {});
+              playTTS(`Got it! Saved ${raw} as your delivery address. Now what are you craving?`, undefined).catch(() => {});
             }
             return;
           }
@@ -919,7 +919,7 @@ export default function ChatPage() {
           },
         ]);
         if (isVoiceModeRef.current) {
-          playTTS(`What's your delivery address for ${recommendationProfile.name}? Just say it.`, userKeys.elevenLabsKey || undefined).catch(() => {});
+          playTTS(`What's your delivery address for ${recommendationProfile.name}? Just say it.`, undefined).catch(() => {});
         }
         setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
         return;
@@ -1019,7 +1019,7 @@ export default function ChatPage() {
                     streamTTSStarted = true;
                     setVoiceState("speaking");
                     setIsTTSSpeaking(true);
-                    streamTTSPromise = playTTS(streamTTSFirstText, userKeys.elevenLabsKey || undefined)
+                    streamTTSPromise = playTTS(streamTTSFirstText, undefined)
                       .catch(() => {});
                   }
                 }
@@ -1043,11 +1043,11 @@ export default function ChatPage() {
                     if (streamTTSStarted && streamTTSPromise) {
                       await streamTTSPromise;
                       const remaining = event.cleanText.slice(streamTTSFirstText.length).trim();
-                      if (remaining) await playTTS(remaining, userKeys.elevenLabsKey || undefined);
+                      if (remaining) await playTTS(remaining, undefined);
                     } else {
                       setVoiceState("speaking");
                       setIsTTSSpeaking(true);
-                      await playTTS(event.cleanText, userKeys.elevenLabsKey || undefined);
+                      await playTTS(event.cleanText, undefined);
                     }
                   } catch {
                     // playTTS already fell back to browser TTS — only show error if that also failed
