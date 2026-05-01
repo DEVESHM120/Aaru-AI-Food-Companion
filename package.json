@@ -12,6 +12,7 @@
     "@anthropic-ai/sdk": "^0.91.1",
     "@openai/agents": "^0.8.5",
     "@supabase/supabase-js": "^2.105.1",
+    "@vercel/analytics": "^2.0.1",
     "@vercel/kv": "^3.0.0",
     "framer-motion": "^12.7.4",
     "groq-sdk": "^1.1.2",
