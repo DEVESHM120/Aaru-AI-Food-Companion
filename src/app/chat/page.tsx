@@ -115,11 +115,14 @@ function playBrowserTTS(text: string): Promise<void> {
       utt.rate = 1.05;
       utt.pitch = 1.0;
       browserTTSActive = true;
-      utt.onend = () => { browserTTSActive = false; resolve(); };
+      // iOS Safari: onend often never fires — safety timeout so UI never stays locked
+      const safetyTimer = setTimeout(() => { browserTTSActive = false; resolve(); }, 9000);
+      utt.onend = () => { clearTimeout(safetyTimer); browserTTSActive = false; resolve(); };
       utt.onerror = (e) => {
+        clearTimeout(safetyTimer);
         browserTTSActive = false;
         if (e.error === "interrupted") { resolve(); return; }
-        reject(new Error(`Browser TTS error: ${e.error}`));
+        resolve(); // resolve not reject — don't let TTS errors lock the UI
       };
       synth.speak(utt);
     };
@@ -143,12 +146,16 @@ async function playTTS(text: string, elevenLabsKey?: string): Promise<void> {
   stopActiveAudio();
   try {
     await new Promise<void>((resolve, reject) => {
+      const ctrl = new AbortController();
+      const fetchTimer = setTimeout(() => { ctrl.abort(); reject(new Error("TTS timeout")); }, 10000);
       fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, elevenLabsKey }),
+        signal: ctrl.signal,
       })
         .then((r) => {
+          clearTimeout(fetchTimer);
           const ct = r.headers.get("Content-Type") ?? "";
           if (!r.ok || !ct.includes("audio")) return Promise.reject(new Error("not audio"));
           return r.arrayBuffer();

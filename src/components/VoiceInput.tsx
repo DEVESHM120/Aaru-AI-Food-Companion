@@ -140,6 +140,7 @@ const VoiceInput = forwardRef<VoiceInputHandle, VoiceInputProps>(function VoiceI
 
     recognition.onend = () => {
       isRunningRef.current = false;
+      onInterimRef.current(""); // always clear interim — prevents textarea getting stuck readOnly
       if (accumulatedRef.current.trim()) submitAccumulated();
       if (isVoiceModeRef.current && !isSpeakingRef.current && !ttsCooldownRef.current) {
         setTimeout(() => {
