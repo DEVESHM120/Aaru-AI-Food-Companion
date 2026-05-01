@@ -17,12 +17,11 @@ import AIThinking from "@/components/AIThinking";
 import SettingsModal from "@/components/SettingsModal";
 import SetupWizard, { UserKeys } from "@/components/SetupWizard";
 import type { VoiceInputHandle } from "@/components/VoiceInput";
-import TrialBanner from "@/components/TrialBanner";
-import TrialPaywall from "@/components/TrialPaywall";
 import CartDrawer from "@/components/CartDrawer";
 import InstamartGrid from "@/components/InstamartGrid";
 import DineoutPicker from "@/components/DineoutPicker";
 import OrderTracker from "@/components/OrderTracker";
+import TrialLimitModal from "@/components/TrialLimitModal";
 import {
   Message, InputMode, Restaurant, OrderDetails,
   WeatherContext, VoiceState, QuickChip, Dish, ClarificationBlock,
@@ -30,6 +29,7 @@ import {
 } from "@/lib/types";
 import { PersonProfile, PersonAddress, PastOrder } from "@/lib/profiles/types";
 import { getAllProfiles, saveProfile, newProfileId, addMemory, setMemories } from "@/lib/profiles/store";
+import { buildConversationContext } from "@/lib/conversationContext";
 
 const WELCOME: Message = {
   id: "welcome",
@@ -174,6 +174,61 @@ async function playTTS(text: string, elevenLabsKey?: string): Promise<void> {
 
 const LEARNING_SIGNAL = /\b(don'?t|never|always|prefer|hate|love|allergic|remember|told you|wrong|actually|favourite|dislike|not again|bored of|i'?m|vegan|vegetarian|keto|lactose|avoid|stop|please no)\b/i;
 
+function normalizeName(value: string) {
+  return value.toLowerCase().replace(/[^a-z\s'’-]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function titleCase(value: string) {
+  return value
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function mergeNotes(existing: string, addition: string) {
+  const parts = [existing.trim(), addition.trim()].filter(Boolean);
+  const merged = parts.join(" ");
+  return merged.replace(/\s+/g, " ").trim();
+}
+
+function extractFoodDislikes(text: string): string[] {
+  const lowered = text.toLowerCase();
+  const disliked = new Set<string>();
+  const knownItems = [
+    "idli", "dosa", "poha", "paratha", "uttapam", "upma", "vada", "sambar",
+    "biryani", "pizza", "burger", "paneer", "momo", "noodles", "pasta",
+    "south indian", "north indian", "chinese", "italian", "sweets", "dessert",
+  ];
+
+  const hasDislikeCue = /\b(i\s+don'?t\s+like|i\s+dont\s+like|i\s+hate|hate|dislike|avoid|never recommend|not again|please no|no more|stop recommending|don'?t recommend|dont recommend|no)\b/i.test(lowered);
+  if (!hasDislikeCue) return [];
+
+  for (const item of knownItems) {
+    const itemPattern = item.replace(/\s+/g, "\\s+");
+    if (new RegExp(`\\b${itemPattern}\\b`, "i").test(lowered)) {
+      disliked.add(titleCase(item));
+    }
+  }
+
+  const direct = lowered.match(/\b(?:i\s+don'?t\s+like|i\s+dont\s+like|i\s+hate|hate|dislike|avoid|never recommend|don'?t recommend|dont recommend|please no|no more|no)\s+([a-z][a-z\s-]{1,30})\b/i)?.[1];
+  if (direct) {
+    const cleaned = direct
+      .replace(/\b(food|dish|dishes|please|again|anymore|from now|for me)\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (cleaned && cleaned.length <= 24) disliked.add(titleCase(cleaned));
+  }
+
+  return [...disliked];
+}
+
+function isPreferenceOnlyUpdate(text: string) {
+  return /\b(i\s+don'?t\s+like|i\s+dont\s+like|i\s+hate|hate|dislike|avoid|never recommend|don'?t recommend|dont recommend|please no|no more|stop recommending)\b/i.test(text)
+    && !/\b(what should|recommend|suggest|show me|order|add|cart|checkout|place)\b/i.test(text);
+}
+
 function extractCity(locationName: string): string {
   const parts = locationName.split(",");
   for (const part of parts.reverse()) {
@@ -181,6 +236,24 @@ function extractCity(locationName: string): string {
     if (trimmed && trimmed.length > 2 && !trimmed.match(/^\d/)) return trimmed;
   }
   return "Delhi";
+}
+
+function normalizeSwiggyAddresses(addresses: Record<string, string>[]): PersonAddress[] {
+  return addresses
+    .map((a, i) => {
+      const locationName = a.address ?? a.formatted_address ?? a.locationName ?? a.location_name ?? "";
+      return {
+        addressId: a.address_id ?? a.id ?? `swiggy_${i}`,
+        label: a.name ?? a.label ?? (i === 0 ? "Home" : `Address ${i + 1}`),
+        locationName,
+        city: a.city ?? extractCity(locationName),
+      };
+    })
+    .filter((a) => a.addressId && a.locationName);
+}
+
+function toAvailableAddresses(addresses: PersonAddress[]) {
+  return addresses.map((a) => ({ address_id: a.addressId, location_name: a.locationName }));
 }
 
 export default function ChatPage() {
@@ -207,15 +280,13 @@ export default function ChatPage() {
   const [userKeys, setUserKeys] = useState<UserKeys>({ anthropicKey: "", elevenLabsKey: "", zomatoToken: "", swiggyToken: "", tier: "trial" });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [trialUsed, setTrialUsed] = useState(0);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [cart, setCart] = useState<CartBlock | null>(null);
   const [instamartItems, setInstamartItems] = useState<InstamartBlock | null>(null);
   const [dineoutOptions, setDineoutOptions] = useState<DineoutBlock | null>(null);
   const [activeOrder, setActiveOrder] = useState<OrderStatusBlock | null>(null);
   const [tokenExpired, setTokenExpired] = useState(false);
-  const [trialOrdersUsed, setTrialOrdersUsed] = useState(0);
-  const [trialPaywallOpen, setTrialPaywallOpen] = useState(false);
+  const [showTrialModal, setShowTrialModal] = useState(false);
 
   const { data: session } = useSession();
 
@@ -226,19 +297,51 @@ export default function ChatPage() {
 
   const isThinking = voiceState === "thinking";
 
-  // Fetch trial order count from server on mount
-  useEffect(() => {
-    if (userKeys.anthropicKey) return; // full mode, no limit
-    fetch("/api/trial")
-      .then(r => r.json())
-      .then(({ ordersUsed }) => { if (typeof ordersUsed === "number") setTrialOrdersUsed(ordersUsed); })
-      .catch(() => {});
-  }, [userKeys.anthropicKey]);
-
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const voiceInputRef = useRef<VoiceInputHandle>(null);
   const isVoiceModeRef = useRef(isVoiceMode);
   useEffect(() => { isVoiceModeRef.current = isVoiceMode; }, [isVoiceMode]);
+  const onboardingStepRef = useRef(onboardingStep);
+  useEffect(() => { onboardingStepRef.current = onboardingStep; }, [onboardingStep]);
+  // populated after handleOnboardingAnswer is defined below
+  const handleOnboardingAnswerRef = useRef<(v: string) => void>(() => {});
+  // when set, the next message is treated as an address for this profile id
+  const awaitingAddressForRef = useRef<string | null>(null);
+
+  const syncSwiggyAddressesForToken = useCallback(async (token: string) => {
+    if (!token) return [];
+    try {
+      const res = await fetch("/api/swiggy/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      if (res.status === 401) {
+        setTokenExpired(true);
+        return [];
+      }
+      const { addresses } = await res.json();
+      if (!Array.isArray(addresses) || addresses.length === 0) return [];
+
+      const mapped = normalizeSwiggyAddresses(addresses);
+      setPreloadedAddresses(toAvailableAddresses(mapped));
+
+      const profiles = getAllProfiles();
+      if (profiles.length > 0) {
+        const updated = {
+          ...profiles[0],
+          addresses: mapped,
+          defaultAddressId: profiles[0].defaultAddressId ?? mapped[0]?.addressId,
+        };
+        saveProfile(updated);
+        setActiveProfile(updated);
+        setAllProfiles(getAllProfiles());
+      }
+      return mapped;
+    } catch {
+      return [];
+    }
+  }, []);
 
   // ── iOS AudioContext unlock — resume shared ctx on first user gesture ────────
   useEffect(() => {
@@ -270,59 +373,60 @@ export default function ChatPage() {
     setTheme(initial);
     document.documentElement.setAttribute("data-theme", initial);
 
+    let loadedKeys: Partial<UserKeys> = {};
     try {
       const raw = localStorage.getItem("aaru-user-keys");
-      if (raw) setUserKeys((prev) => ({ ...prev, ...JSON.parse(raw) }));
+      if (raw) loadedKeys = JSON.parse(raw);
     } catch {}
-
-    const used = parseInt(localStorage.getItem("aaru-trial-msgs-used") ?? "0", 10);
-    setTrialUsed(isNaN(used) ? 0 : used);
 
     // Read OAuth tokens passed back via URL params after OAuth redirect
     const params = new URLSearchParams(window.location.search);
     const swiggyToken = params.get("swiggy_token");
+    const swiggyExpiresAt = Number(params.get("swiggy_expires_at") ?? 0) || undefined;
+    const swiggyScope = params.get("swiggy_scope") ?? undefined;
+    const swiggyError = params.get("swiggy_error");
     const zomatoToken = params.get("zomato_token");
+    const nextKeys: UserKeys = {
+      anthropicKey: "",
+      elevenLabsKey: "",
+      swiggyToken: "",
+      tier: "trial",
+      ...loadedKeys,
+      ...(swiggyToken ? { swiggyToken, swiggyExpiresAt, swiggyScope, tier: "full" as const } : {}),
+      ...(zomatoToken ? { zomatoToken, tier: "full" as const } : {}),
+    };
+    setUserKeys(nextKeys);
+    localStorage.setItem("aaru-user-keys", JSON.stringify(nextKeys));
+
+    const usableSwiggyToken =
+      nextKeys.swiggyToken && (!nextKeys.swiggyExpiresAt || nextKeys.swiggyExpiresAt > Date.now() + 60_000)
+        ? nextKeys.swiggyToken
+        : "";
+
+    if (nextKeys.swiggyToken && !usableSwiggyToken) {
+      setTokenExpired(true);
+    }
+
     if (swiggyToken || zomatoToken) {
-      setUserKeys((prev) => {
-        const next = { ...prev, ...(swiggyToken ? { swiggyToken, tier: "full" as const } : {}), ...(zomatoToken ? { zomatoToken, tier: "full" as const } : {}) };
-        localStorage.setItem("aaru-user-keys", JSON.stringify(next));
-        return next;
-      });
       // Clean URL
       window.history.replaceState({}, "", window.location.pathname);
+    }
 
-      // Pre-fetch Swiggy addresses to auto-populate the active profile
-      if (swiggyToken) {
-        fetch("/api/swiggy/profile", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: swiggyToken }),
-        })
-          .then(r => r.json())
-          .then(({ addresses }) => {
-            if (!Array.isArray(addresses) || addresses.length === 0) return;
-            const mapped: PersonAddress[] = addresses.map((a: Record<string, string>) => ({
-              addressId: a.address_id ?? a.id ?? "",
-              label: a.name ?? a.label ?? "Home",
-              locationName: a.address ?? a.formatted_address ?? a.locationName ?? "",
-              city: a.city ?? "",
-            }));
-            const profiles = getAllProfiles();
-            if (profiles.length > 0) {
-              const updated = { ...profiles[0], addresses: mapped };
-              saveProfile(updated);
-              setActiveProfile(updated);
-            }
-          })
-          .catch(() => {});
-      }
+    if (swiggyError && !swiggyToken) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
+    if (usableSwiggyToken) {
+      syncSwiggyAddressesForToken(usableSwiggyToken);
+    } else {
+      setPreloadedAddresses([]);
     }
 
     // Auto-open wizard on first visit
     if (!localStorage.getItem("aaru-setup-seen")) {
       setTimeout(() => setWizardOpen(true), 600);
     }
-  }, []);
+  }, [syncSwiggyAddressesForToken]);
 
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
@@ -334,6 +438,15 @@ export default function ChatPage() {
   // ── On mount: load profiles and pre-fetch everything in parallel ──────────────
   useEffect(() => {
     const existing = getAllProfiles();
+    let storedSwiggyToken = "";
+    try {
+      const raw = localStorage.getItem("aaru-user-keys");
+      const keys = raw ? JSON.parse(raw) as Partial<UserKeys> : {};
+      const expiresAt = keys.swiggyExpiresAt ?? 0;
+      if (keys.swiggyToken && (!expiresAt || expiresAt > Date.now() + 60_000)) {
+        storedSwiggyToken = keys.swiggyToken;
+      }
+    } catch {}
 
     function syncMemoriesForProfile(profile: PersonProfile) {
       fetch(`/api/memories?profileName=${encodeURIComponent(profile.name)}`)
@@ -350,7 +463,11 @@ export default function ChatPage() {
     if (existing.length > 0) {
       setAllProfiles(existing);
       setActiveProfile(existing[0]);
-      fetch("/api/addresses").then((r) => r.json()).then(setPreloadedAddresses).catch(() => {});
+      if (storedSwiggyToken) {
+        syncSwiggyAddressesForToken(storedSwiggyToken);
+      } else {
+        fetch("/api/addresses").then((r) => r.json()).then(setPreloadedAddresses).catch(() => {});
+      }
       syncMemoriesForProfile(existing[0]);
       // Merge in any additional profiles from KV (e.g. added on another device)
       fetch("/api/profiles")
@@ -378,7 +495,11 @@ export default function ChatPage() {
           setAllProfiles(kvProfiles);
           setActiveProfile(kvProfiles[0]);
           setIsSeeding(false);
-          fetch("/api/addresses").then((r) => r.json()).then(setPreloadedAddresses).catch(() => {});
+          if (storedSwiggyToken) {
+            syncSwiggyAddressesForToken(storedSwiggyToken);
+          } else {
+            fetch("/api/addresses").then((r) => r.json()).then(setPreloadedAddresses).catch(() => {});
+          }
           syncMemoriesForProfile(kvProfiles[0]);
           return;
         }
@@ -387,8 +508,12 @@ export default function ChatPage() {
       .catch(() => seedFromZomato());
 
     function seedFromZomato() {
+      const addressPromise = storedSwiggyToken
+        ? syncSwiggyAddressesForToken(storedSwiggyToken).then(toAvailableAddresses)
+        : fetchWithTimeout<{ address_id: string; location_name: string }[]>("/api/addresses", [], 8000);
+
       Promise.all([
-      fetchWithTimeout<{ address_id: string; location_name: string }[]>("/api/addresses", [], 8000),
+      addressPromise,
       fetchWithTimeout<{ name: string | null; diet?: string; budgetRange?: string; preferredCuisines?: string[]; allergies?: string[] }>("/api/user", { name: null }, 8000),
       fetchWithTimeout<any[]>("/api/orders", [], 8000),
       fetchWithTimeout<any[]>("/api/contacts", [], 8000),
@@ -400,11 +525,6 @@ export default function ChatPage() {
         .sort((a, b) => new Date(b.orderedAt ?? 0).getTime() - new Date(a.orderedAt ?? 0).getTime())
         .slice(0, 20);
       setPreloadedAddresses(addresses);
-
-      if (addresses.length === 0 && !userInfo?.name) {
-        setIsSeeding(false);
-        return;
-      }
 
       const autoName: string = userInfo?.name || "Me";
       const ADDRESS_LABEL_DEFAULTS = ["Home", "Office", "College", "Gym", "Other"];
@@ -518,13 +638,218 @@ export default function ChatPage() {
     });
   }, [pendingOrderNoAddr]);
 
-  const trialExhausted = !userKeys.anthropicKey && trialUsed >= 50;
+  const handleAddDishToCart = useCallback((dish: Dish) => {
+    setCart((prev) => {
+      const item = {
+        dishName: dish.dishName,
+        restaurantName: dish.restaurantName,
+        price: dish.price,
+        qty: 1,
+        platform: dish.platform,
+        isVeg: dish.isVeg,
+      };
+
+      if (!prev || prev.restaurantName !== dish.restaurantName || prev.platform !== dish.platform) {
+        return {
+          items: [item],
+          total: dish.price,
+          platform: dish.platform,
+          restaurantName: dish.restaurantName,
+        };
+      }
+
+      let found = false;
+      const items = prev.items.map((existing) => {
+        if (existing.dishName !== dish.dishName) return existing;
+        found = true;
+        return { ...existing, qty: existing.qty + 1 };
+      });
+
+      if (!found) items.push(item);
+      return {
+        ...prev,
+        items,
+        total: items.reduce((sum, current) => sum + current.price * current.qty, 0),
+      };
+    });
+  }, []);
+
+  function applyConversationProfileHints(text: string): PersonProfile | null {
+    if (!activeProfile) return null;
+
+    const raw = text.trim();
+    const lowered = raw.toLowerCase();
+    const profiles = getAllProfiles();
+
+    const targetNameMatch = raw.match(/\b(?:order for|for|ordering for)\s+([a-z][a-z'’ -]{1,40})\b/i);
+    const explicitNameMatch = raw.match(/\b(?:my name is|i am|i'm|call me)\s+([a-z][a-z'’ -]{1,40})\b/i);
+    const targetName = targetNameMatch?.[1] ? normalizeName(targetNameMatch[1]) : "";
+
+    const targetProfile =
+      targetName && !/^(myself|me|us|ours|self|my)$/.test(targetName)
+        ? profiles.find((p) => normalizeName(p.name) === targetName) ?? activeProfile
+        : activeProfile;
+
+    let updated: PersonProfile = {
+      ...targetProfile,
+      preferences: {
+        ...targetProfile.preferences,
+        likes: [...targetProfile.preferences.likes],
+        dislikes: [...targetProfile.preferences.dislikes],
+      },
+      addresses: [...targetProfile.addresses],
+      pastOrders: [...targetProfile.pastOrders],
+      memories: [...(targetProfile.memories ?? [])],
+    };
+
+    let changed = false;
+
+    if (explicitNameMatch?.[1] && (!updated.name.trim() || normalizeName(updated.name) === "me")) {
+      updated = { ...updated, name: titleCase(explicitNameMatch[1]) };
+      changed = true;
+    }
+
+    const addLike = (label: string) => {
+      if (!updated.preferences.likes.some((item) => normalizeName(item) === normalizeName(label))) {
+        updated.preferences.likes = [...updated.preferences.likes, label];
+        changed = true;
+      }
+    };
+
+    const addDislike = (label: string) => {
+      if (!updated.preferences.dislikes.some((item) => normalizeName(item) === normalizeName(label))) {
+        updated.preferences.dislikes = [...updated.preferences.dislikes, label];
+        changed = true;
+      }
+    };
+
+    if (/\bnon[- ]?veg\b/.test(lowered) || /\bnonvegetarian\b/.test(lowered)) {
+      if (/\bmostly\b/.test(lowered) || /\bbut\b/.test(lowered) || /\bhowever\b/.test(lowered)) {
+        if (updated.preferences.diet !== "both") {
+          updated.preferences.diet = "both";
+          changed = true;
+        }
+        updated.preferences.notes = mergeNotes(updated.preferences.notes, "Mostly eats veg but also orders non-veg sometimes.");
+      } else if (updated.preferences.diet !== "nonveg") {
+        updated.preferences.diet = "nonveg";
+        changed = true;
+      }
+    } else if (/\bvegetarian\b|\bveg\b/.test(lowered)) {
+      if (updated.preferences.diet !== "veg") {
+        updated.preferences.diet = "veg";
+        changed = true;
+      }
+    }
+
+    const interestMap: Array<{ test: RegExp; label: string; note?: string }> = [
+      { test: /\bchees(y|e)|cheese burst|loaded\b/, label: "Cheesy", note: "likes cheesy food" },
+      { test: /\bspicy|heat|fiery|schezwan|peri[- ]?peri|chilli|chili\b/, label: "Spicy", note: "likes spicy food" },
+      { test: /\bhealthy|light|salad|protein|clean|fresh\b/, label: "Healthy", note: "prefers lighter meals" },
+      { test: /\bbiryani\b/, label: "Biryani" },
+      { test: /\bpizza\b/, label: "Pizza" },
+      { test: /\bburger\b/, label: "Burger" },
+      { test: /\bchinese\b/, label: "Chinese" },
+      { test: /\bnorth indian\b/, label: "North Indian" },
+      { test: /\bsouth indian\b/, label: "South Indian" },
+      { test: /\bstreet food\b/, label: "Street Food" },
+      { test: /\bdessert|sweet\b/, label: "Desserts" },
+      { test: /\bseafood\b/, label: "Seafood" },
+    ];
+
+    const hasNegativePreference = /\b(i\s+don'?t\s+like|i\s+dont\s+like|i\s+hate|hate|dislike|avoid|never recommend|not again|please no|no more|stop recommending|don'?t recommend|dont recommend|no)\b/i.test(lowered);
+
+    for (const item of interestMap) {
+      if (!hasNegativePreference && item.test.test(lowered)) {
+        addLike(item.label);
+        if (item.note) {
+          updated.preferences.notes = mergeNotes(updated.preferences.notes, item.note);
+        }
+      }
+    }
+
+    const dislikedFoods = extractFoodDislikes(raw);
+    for (const food of dislikedFoods) {
+      addDislike(food);
+      const fact = `Does not like ${food}; avoid unless explicitly asked.`;
+      if (!updated.memories?.some((memory) => normalizeName(memory) === normalizeName(fact))) {
+        updated.memories = [fact, ...(updated.memories ?? [])].slice(0, 30);
+        changed = true;
+      }
+    }
+
+    if (/\bnot too oily\b|\bavoid oily\b/.test(lowered)) addDislike("Too Oily");
+    if (/\bavoid sweets\b|\bno sweets\b/.test(lowered)) addDislike("Sweets");
+    if (/\blactose intolerant\b/.test(lowered)) {
+      updated.preferences.notes = mergeNotes(updated.preferences.notes, "Lactose intolerant.");
+      addDislike("Heavy Dairy");
+    }
+
+    if (changed) {
+      saveProfile(updated);
+      const latest = getAllProfiles();
+      setAllProfiles(latest);
+      handleAllProfilesChange(latest);
+    }
+
+    if (targetProfile.id !== activeProfile.id || changed) {
+      setActiveProfile(updated);
+    }
+
+    return updated;
+  }
 
   // ── Core send message ─────────────────────────────────────────────────────────
   const sendMessage = useCallback(
     async (text: string, mode: InputMode = "text") => {
       if (!text.trim() || voiceState === "thinking") return;
-      if (trialExhausted) { setWizardOpen(true); return; }
+
+      // During onboarding, route voice input to the onboarding handler instead of Groq
+      if (onboardingStepRef.current && onboardingStepRef.current !== "done") {
+        handleOnboardingAnswerRef.current(text.trim());
+        return;
+      }
+
+      // If Aaru asked for an address, capture the next message as the address
+      if (awaitingAddressForRef.current) {
+        const profileId = awaitingAddressForRef.current;
+        awaitingAddressForRef.current = null;
+        const raw = text.trim();
+        const skip = /^(skip|cancel|no|later|nevermind|nope)$/i.test(raw);
+        if (!skip) {
+          const words = raw.split(/\s+/);
+          const city = words.length > 1 ? words[words.length - 1] : raw;
+          const newAddress: PersonAddress = {
+            addressId: `addr_${Date.now()}`,
+            locationName: raw,
+            city,
+            label: "Home",
+          };
+          const profiles = getAllProfiles();
+          const profile = profiles.find((p) => p.id === profileId);
+          if (profile) {
+            const updated = {
+              ...profile,
+              addresses: [...profile.addresses, newAddress],
+              defaultAddressId: profile.defaultAddressId ?? newAddress.addressId,
+            };
+            saveProfile(updated);
+            if (profile.id === activeProfile?.id) setActiveProfile(updated);
+            handleAllProfilesChange(getAllProfiles());
+            setMessages((prev) => [
+              ...prev,
+              { id: Date.now().toString(), role: "user", content: raw, inputMode: mode, timestamp: new Date() },
+              { id: (Date.now() + 1).toString(), role: "assistant", content: `Got it! Saved "${raw}" as your delivery address. Now what are you craving?`, timestamp: new Date() },
+            ]);
+            setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
+            if (isVoiceModeRef.current) {
+              playTTS(`Got it! Saved ${raw} as your delivery address. Now what are you craving?`, userKeys.elevenLabsKey || undefined).catch(() => {});
+            }
+            return;
+          }
+        }
+        setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
+        return;
+      }
 
       setChipsVisible(false);
       const userMsg: Message = {
@@ -549,6 +874,57 @@ export default function ChatPage() {
         content: m.content,
       }));
 
+      const inferredProfile = applyConversationProfileHints(text.trim()) ?? activeProfile;
+      const liveProfiles = getAllProfiles();
+      const liveActiveProfile = inferredProfile
+        ? liveProfiles.find((p) => p.id === inferredProfile.id) ?? inferredProfile
+        : null;
+      const turnContext = buildConversationContext(text.trim(), liveActiveProfile ?? activeProfile, liveProfiles, weather);
+      try {
+        localStorage.setItem("aaru-turn-context", JSON.stringify({
+          intent: turnContext.intent,
+          targetProfileId: turnContext.targetProfile?.id ?? null,
+          targetProfileName: turnContext.targetProfile?.name ?? null,
+          summary: turnContext.summary,
+          updatedAt: new Date().toISOString(),
+        }));
+      } catch {}
+
+      const dislikedFoods = extractFoodDislikes(text.trim());
+      if (isPreferenceOnlyUpdate(text.trim()) && dislikedFoods.length > 0) {
+        const label = dislikedFoods.join(", ");
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: `Got it. I won't recommend ${label} unless you ask for it.`,
+            timestamp: new Date(),
+          },
+        ]);
+        setVoiceState("idle");
+        return;
+      }
+
+      const recommendationProfile = turnContext.targetProfile ?? liveActiveProfile;
+      if (turnContext.intent === "recommend_food" && recommendationProfile && recommendationProfile.addresses.length === 0 && !onboardingStepRef.current) {
+        awaitingAddressForRef.current = recommendationProfile.id;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: `What's your delivery address for ${recommendationProfile.name}? Just say or type it — like "Sector 23 Panchkula" or "Koramangala Bangalore".`,
+            timestamp: new Date(),
+          },
+        ]);
+        if (isVoiceModeRef.current) {
+          playTTS(`What's your delivery address for ${recommendationProfile.name}? Just say it.`, userKeys.elevenLabsKey || undefined).catch(() => {});
+        }
+        setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
+        return;
+      }
+
       const aiId = (Date.now() + 1).toString();
       setMessages((prev) => [
         ...prev,
@@ -562,13 +938,13 @@ export default function ChatPage() {
           body: JSON.stringify({
             messages: history,
             inputMode: mode,
-            activeProfile,
-            allProfiles,
+            activeProfile: liveActiveProfile,
+            allProfiles: liveProfiles,
             weather,
-            anthropicKey: userKeys.anthropicKey || undefined,
+            conversationContext: turnContext,
             zomatoToken: userKeys.zomatoToken || undefined,
             swiggyToken: userKeys.swiggyToken || undefined,
-            isTrial: !userKeys.anthropicKey && !userKeys.swiggyToken && !userKeys.zomatoToken,
+            isTrial: true,
           }),
         });
 
@@ -595,19 +971,17 @@ export default function ChatPage() {
             try {
               const event = JSON.parse(raw);
 
-              if (event.type === "token_expired") {
-                setTokenExpired(true);
-                setMessages((prev) =>
-                  prev.map((m) => m.id === aiId ? { ...m, content: "Your Swiggy/Zomato session expired. Reconnect in Settings to continue ordering.", streaming: false } : m)
-                );
+              if (event.type === "trial_exhausted") {
+                setShowTrialModal(true);
+                setMessages((prev) => prev.filter((m) => m.id !== aiId));
                 setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
                 gotDone = true;
               }
 
-              if (event.type === "trial_exhausted") {
-                setTrialPaywallOpen(true);
+              if (event.type === "token_expired") {
+                setTokenExpired(true);
                 setMessages((prev) =>
-                  prev.map((m) => m.id === aiId ? { ...m, content: "You've used all 5 trial orders! Add your Anthropic key to keep going.", streaming: false } : m)
+                  prev.map((m) => m.id === aiId ? { ...m, content: "Your Swiggy/Zomato session expired. Reconnect in Settings to continue ordering.", streaming: false } : m)
                 );
                 setVoiceState(isVoiceModeRef.current ? "listening" : "idle");
                 gotDone = true;
@@ -655,14 +1029,6 @@ export default function ChatPage() {
                 setMessages((prev) =>
                   prev.map((m) => m.id === aiId ? { ...m, content: event.cleanText, streaming: false } : m)
                 );
-                // Increment trial counter if in trial mode
-                if (!userKeys.anthropicKey) {
-                  setTrialUsed((prev) => {
-                    const next = prev + 1;
-                    localStorage.setItem("aaru-trial-msgs-used", String(next));
-                    return next;
-                  });
-                }
                 if (event.restaurants) setRestaurants(event.restaurants);
                 if (event.dishes) setDishes(event.dishes);
                 if (event.orderDetails) handleOrderSelect(event.orderDetails);
@@ -692,20 +1058,20 @@ export default function ChatPage() {
                 gotDone = true;
 
                 // Background memory extraction — fires only on learning signals, zero latency impact
-                if (activeProfile && LEARNING_SIGNAL.test(text) && event.cleanText) {
+                if (liveActiveProfile && LEARNING_SIGNAL.test(text) && event.cleanText) {
                   fetch("/api/extract-memory", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                       userMessage: text,
                       assistantReply: event.cleanText,
-                      profileName: activeProfile.name,
+                      profileName: liveActiveProfile.name,
                     }),
                   })
                     .then((r) => r.json())
                     .then(({ fact }: { fact: string | null }) => {
-                      if (fact && activeProfile) {
-                        addMemory(activeProfile.id, fact);
+                      if (fact && liveActiveProfile) {
+                        addMemory(liveActiveProfile.id, fact);
                         setActiveProfile((prev) => prev
                           ? { ...prev, memories: [fact, ...(prev.memories ?? [])].slice(0, 30) }
                           : prev
@@ -823,6 +1189,8 @@ export default function ChatPage() {
     if (nextStep) injectAaruMessage(ONBOARDING_PROMPTS[nextStep]);
     handleAllProfilesChange(getAllProfiles());
   }, [onboardingStep, onboardingTargetId, activeProfile, handleAllProfilesChange]);
+  // keep ref current so sendMessage can access it without circular deps
+  useEffect(() => { handleOnboardingAnswerRef.current = handleOnboardingAnswer; }, [handleOnboardingAnswer]);
 
   // Start onboarding for a given profile id
   const startOnboarding = useCallback((profileId: string) => {
@@ -882,19 +1250,6 @@ export default function ChatPage() {
       saveProfile(updated);
       setActiveProfile(updated);
       handleAllProfilesChange(getAllProfiles());
-    }
-
-    // Zomato can't place orders via MCP — open their app instead
-    if (pendingOrder.platform === "zomato") {
-      const query = encodeURIComponent(pendingOrder.restaurant.name);
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(), role: "assistant" as const,
-        content: `Zomato ordering opens in their app — [Tap to order from ${pendingOrder.restaurant.name} on Zomato](https://www.zomato.com/search?keyword=${query})`,
-        timestamp: new Date(),
-      }]);
-      setPendingOrder(null);
-      setOrderPlaced(null);
-      return;
     }
 
     setOrderPlaced(pendingOrder);
@@ -980,7 +1335,7 @@ export default function ChatPage() {
 
           {/* Settings */}
           <motion.button
-            onClick={() => userKeys.anthropicKey ? setSettingsOpen(true) : setWizardOpen(true)}
+            onClick={() => setSettingsOpen(true)}
             whileTap={{ scale: 0.93 }}
             className="w-8 h-8 rounded-full flex items-center justify-center text-sm transition-all"
             style={{ backgroundColor: "var(--surface-2)", border: "1px solid var(--border)" }}
@@ -1042,13 +1397,6 @@ export default function ChatPage() {
           )}
         </div>
       </header>
-
-      {/* Trial banner */}
-      <AnimatePresence>
-        {!userKeys.anthropicKey && trialUsed < 50 && (
-          <TrialBanner used={trialUsed} ordersUsed={trialOrdersUsed} onUpgrade={() => setWizardOpen(true)} />
-        )}
-      </AnimatePresence>
 
       {/* Voice error banner */}
       <AnimatePresence>
@@ -1162,7 +1510,7 @@ export default function ChatPage() {
                   <motion.button
                     key={chip.label}
                     whileTap={{ scale: 0.95 }}
-                    onClick={() => sendMessage(chip.query, "text")}
+                    onClick={() => sendMessage(chip.query, isVoiceMode ? "voice" : "text")}
                     className="flex items-center gap-1.5 text-sm font-medium px-4 py-2 rounded-2xl transition-all"
                     style={{
                       backgroundColor: "var(--surface)",
@@ -1201,6 +1549,7 @@ export default function ChatPage() {
           {dishes && !isThinking && (
             <DishCards
               dishes={dishes}
+              onAddToCart={handleAddDishToCart}
               onSelect={(dish) =>
                 handleOrderSelect({
                   restaurant: {
@@ -1252,7 +1601,7 @@ export default function ChatPage() {
             <InstamartGrid
               data={instamartItems}
               onAddItem={(itemName) => {
-                sendMessage(`Add ${itemName} to my Instamart cart`, "text");
+                sendMessage(`Add ${itemName} to my Instamart cart`, isVoiceMode ? "voice" : "text");
               }}
             />
           )}
@@ -1266,7 +1615,7 @@ export default function ChatPage() {
               onBook={(restaurantName, slot, partySize, date) => {
                 sendMessage(
                   `Book a table for ${partySize} at ${restaurantName} at ${slot}${date ? ` on ${date}` : " today"} using Swiggy Dineout MCP tools.`,
-                  "text"
+                  isVoiceMode ? "voice" : "text"
                 );
                 setDineoutOptions(null);
               }}
@@ -1378,7 +1727,7 @@ export default function ChatPage() {
           onCheckout={() => {
             sendMessage(
               `Checkout and place the order for ${cart.items.map((i) => i.dishName).join(", ")} from ${cart.restaurantName} on ${cart.platform} to my home address. Use ${cart.platform} MCP tools to complete the order and return an order_status block.`,
-              "text"
+              isVoiceMode ? "voice" : "text"
             );
             setCart(null);
           }}
@@ -1401,11 +1750,7 @@ export default function ChatPage() {
         onCancel={() => setPendingOrder(null)}
       />
 
-      <TrialPaywall
-        open={trialPaywallOpen}
-        onAddKey={() => { setTrialPaywallOpen(false); setSettingsOpen(true); }}
-        onClose={() => setTrialPaywallOpen(false)}
-      />
+      <TrialLimitModal open={showTrialModal} onClose={() => setShowTrialModal(false)} />
 
       <SettingsModal
         open={settingsOpen}
@@ -1423,7 +1768,7 @@ export default function ChatPage() {
             setTimeout(() => startOnboarding(activeProfile.id), 400);
           }
         }}
-        initialStep={trialExhausted ? 1 : 0}
+        initialStep={0}
       />
     </div>
   );
@@ -1460,3 +1805,4 @@ function NameInput({ onSave }: { onSave: (name: string) => void }) {
     </form>
   );
 }
+

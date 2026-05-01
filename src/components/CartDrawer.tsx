@@ -1,6 +1,7 @@
 "use client";
 
-import { motion, AnimatePresence } from "framer-motion";
+import { useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { CartBlock } from "@/lib/types";
 
 interface Props {
@@ -9,85 +10,129 @@ interface Props {
   onClear: () => void;
 }
 
-const platformColor = { zomato: "#E23744", swiggy: "#FC8019" };
-
 export default function CartDrawer({ cart, onCheckout, onClear }: Props) {
-  const color = platformColor[cart.platform] ?? "#FF7A00";
+  const color = "#FC8019";
+  const [isExpanded, setIsExpanded] = useState(false);
 
   return (
     <AnimatePresence>
       <motion.div
         key="cart-drawer"
-        initial={{ y: "100%" }}
-        animate={{ y: 0 }}
-        exit={{ y: "100%" }}
+        initial={{ y: 18, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 18, opacity: 0 }}
         transition={{ type: "spring", damping: 28, stiffness: 320 }}
-        className="fixed bottom-0 left-0 right-0 z-40 rounded-t-2xl shadow-2xl pb-safe"
-        style={{ backgroundColor: "var(--bg)", borderTop: "1px solid var(--border)", maxWidth: 480, margin: "0 auto" }}
+        className="fixed left-3 right-3 z-30 rounded-2xl shadow-2xl"
+        style={{
+          bottom: "calc(env(safe-area-inset-bottom, 0px) + 86px)",
+          backgroundColor: "var(--bg)",
+          border: "1px solid var(--border)",
+          maxWidth: 456,
+          margin: "0 auto",
+        }}
       >
-        {/* Handle */}
-        <div className="flex justify-center pt-3 pb-1">
-          <div className="w-10 h-1 rounded-full" style={{ backgroundColor: "var(--border)" }} />
-        </div>
-
-        <div className="px-4 pb-4">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h3 className="font-bold text-base" style={{ color: "var(--text)" }}>Your Cart</h3>
-              <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-                {cart.restaurantName} · <span className="font-semibold" style={{ color }}>{cart.platform.charAt(0).toUpperCase() + cart.platform.slice(1)}</span>
-              </p>
-            </div>
+        <div className="px-3 py-3">
+          <div className="mb-2 flex items-start justify-between gap-3">
             <button
-              onClick={onClear}
-              className="text-xs px-3 py-1.5 rounded-full"
-              style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}
+              type="button"
+              onClick={() => setIsExpanded((v) => !v)}
+              className="min-w-0 flex-1 text-left"
+              aria-label={isExpanded ? "Collapse cart" : "Expand cart"}
             >
-              Clear
+              <p className="truncate text-sm font-bold" style={{ color: "var(--text)" }}>
+                Your Cart
+              </p>
+              <p className="truncate text-xs" style={{ color: "var(--text-muted)" }}>
+                {cart.restaurantName} ·{" "}
+                <span className="font-semibold" style={{ color }}>
+                  {cart.platform.charAt(0).toUpperCase() + cart.platform.slice(1)}
+                </span>
+              </p>
             </button>
-          </div>
 
-          {/* Items */}
-          <div className="space-y-2 mb-4">
-            {cart.items.map((item, i) => (
-              <div
-                key={`${item.dishName}-${i}`}
-                className="flex items-center justify-between py-2 px-3 rounded-xl"
-                style={{ backgroundColor: "var(--surface)", border: "1px solid var(--border)" }}
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsExpanded((v) => !v)}
+                className="rounded-full px-3 py-1.5 text-xs"
+                style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}
               >
-                <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <span
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: item.isVeg ? "#22C55E" : "#EF4444" }}
-                  />
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium truncate" style={{ color: "var(--text)" }}>{item.dishName}</p>
-                    <p className="text-xs" style={{ color: "var(--text-muted)" }}>Qty: {item.qty}</p>
-                  </div>
+                {isExpanded ? "Hide" : "Items"}
+              </button>
+              <button
+                type="button"
+                onClick={onClear}
+                className="rounded-full px-3 py-1.5 text-xs"
+                style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+
+          <AnimatePresence initial={false}>
+            {isExpanded && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18 }}
+                className="overflow-hidden"
+              >
+                <div className="mb-2 max-h-[28vh] space-y-2 overflow-y-auto pr-1">
+                  {cart.items.map((item, i) => (
+                    <div
+                      key={`${item.dishName}-${i}`}
+                      className="flex items-center justify-between rounded-xl px-3 py-2"
+                      style={{ backgroundColor: "var(--surface)", border: "1px solid var(--border)" }}
+                    >
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
+                        <span
+                          className="h-2.5 w-2.5 shrink-0 rounded-full"
+                          style={{ backgroundColor: item.isVeg ? "#22C55E" : "#EF4444" }}
+                        />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium" style={{ color: "var(--text)" }}>
+                            {item.dishName}
+                          </p>
+                          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                            Qty: {item.qty}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="ml-2 shrink-0 text-sm font-semibold" style={{ color }}>
+                        Rs {item.price * item.qty}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-                <span className="font-semibold text-sm ml-2 flex-shrink-0" style={{ color }}>₹{item.price * item.qty}</span>
-              </div>
-            ))}
-          </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          {/* Total + CTA */}
-          <div
-            className="flex items-center justify-between py-3 px-3 rounded-xl mb-3"
-            style={{ backgroundColor: "var(--surface)", border: "1px solid var(--border)" }}
-          >
-            <span className="font-medium text-sm" style={{ color: "var(--text-muted)" }}>Total</span>
-            <span className="font-bold text-lg" style={{ color: "var(--text)" }}>₹{cart.total}</span>
-          </div>
+          <div className="flex items-center gap-2">
+            <div
+              className="flex min-w-0 flex-1 items-center justify-between rounded-xl px-3 py-2.5"
+              style={{ backgroundColor: "var(--surface)", border: "1px solid var(--border)" }}
+            >
+              <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
+                Total
+              </span>
+              <span className="text-base font-bold" style={{ color: "var(--text)" }}>
+                Rs {cart.total}
+              </span>
+            </div>
 
-          <motion.button
-            whileTap={{ scale: 0.98 }}
-            onClick={onCheckout}
-            className="w-full py-3.5 rounded-xl font-bold text-white text-base"
-            style={{ background: `linear-gradient(135deg, ${color}, ${color}cc)` }}
-          >
-            Place Order via {cart.platform.charAt(0).toUpperCase() + cart.platform.slice(1)} →
-          </motion.button>
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              onClick={onCheckout}
+              className="shrink-0 rounded-xl px-4 py-2.5 text-sm font-bold text-white"
+              style={{ background: `linear-gradient(135deg, ${color}, ${color}cc)` }}
+            >
+              Checkout
+            </motion.button>
+          </div>
         </div>
       </motion.div>
     </AnimatePresence>

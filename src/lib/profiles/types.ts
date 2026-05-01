@@ -9,7 +9,7 @@ export interface PastOrder {
   restaurantName: string;
   itemName: string;
   price: number;
-  platform: "zomato" | "swiggy";
+  platform: "swiggy" | "zomato";
   orderedAt: string; // ISO date string
 }
 

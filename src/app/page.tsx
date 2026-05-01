@@ -71,7 +71,7 @@ export default function Home() {
           transition={{ delay: 0.35 }}
           className="text-stone-400 mt-2 text-sm leading-relaxed"
         >
-          Decides what to eat. Talks like a friend. Orders for you — on Zomato &amp; Swiggy.
+          Decides what to eat. Talks like a friend. Orders for you — on Swiggy.
         </motion.p>
 
         {/* Feature pills */}
@@ -112,7 +112,7 @@ export default function Home() {
           transition={{ delay: 0.7 }}
           className="text-xs text-stone-400 mt-4"
         >
-          Works with your real Zomato &amp; Swiggy accounts
+          Powered by your real Swiggy account
         </motion.p>
       </div>
 

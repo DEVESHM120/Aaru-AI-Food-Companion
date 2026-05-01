@@ -14,15 +14,11 @@ const StarIcon = () => (
   </svg>
 );
 
-const platformBadge = {
-  zomato: { bg: "#E23744", label: "Zomato" },
+const platformBadge: Record<string, { bg: string; label: string }> = {
   swiggy: { bg: "#FC8019", label: "Swiggy" },
 };
 
 export default function RestaurantCards({ restaurants, onSelect }: RestaurantCardsProps) {
-  const zomato = restaurants.filter((r) => r.platform === "zomato");
-  const swiggy = restaurants.filter((r) => r.platform === "swiggy");
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -30,8 +26,8 @@ export default function RestaurantCards({ restaurants, onSelect }: RestaurantCar
       className="px-4 mt-2"
     >
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {[...zomato, ...swiggy].map((r, i) => {
-          const badge = platformBadge[r.platform];
+        {restaurants.map((r, i) => {
+          const badge = platformBadge[r.platform] ?? platformBadge.swiggy;
           return (
             <motion.div
               key={r.id}

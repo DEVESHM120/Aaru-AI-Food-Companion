@@ -10,8 +10,7 @@ interface OrderConfirmationProps {
   onCancel: () => void;
 }
 
-const platformBadge = {
-  zomato: { bg: "#E23744", label: "Zomato" },
+const platformBadge: Record<string, { bg: string; label: string }> = {
   swiggy: { bg: "#FC8019", label: "Swiggy" },
 };
 
@@ -95,9 +94,9 @@ export default function OrderConfirmation({ order, onConfirm, onCancel }: OrderC
                   <h2 className="text-base font-bold" style={{ color: "var(--text)" }}>{order.restaurant.name}</h2>
                   <span
                     className="inline-block text-xs font-semibold text-white px-2 py-0.5 rounded-full mt-1"
-                    style={{ backgroundColor: platformBadge[order.platform].bg }}
+                    style={{ backgroundColor: (platformBadge[order.platform] ?? platformBadge.swiggy).bg }}
                   >
-                    via {platformBadge[order.platform].label}
+                    via {(platformBadge[order.platform] ?? platformBadge.swiggy).label}
                   </span>
                 </div>
                 {order.autonomous && (

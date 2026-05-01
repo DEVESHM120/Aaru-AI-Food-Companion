@@ -15,11 +15,16 @@ export async function POST(req: NextRequest) {
     await server.connect();
     const result = await server.callTool("get_addresses", {});
     await server.close();
-    const text = (result as { type: string; text?: string }[]).find(c => c.type === "text")?.text ?? "[]";
-    const addresses = JSON.parse(text);
+    const content = Array.isArray(result)
+      ? result
+      : (result as { content?: { type: string; text?: string }[] })?.content ?? [];
+    const text = (content as { type: string; text?: string }[]).find(c => c.type === "text")?.text ?? "[]";
+    const parsed = JSON.parse(text);
+    const addresses = Array.isArray(parsed) ? parsed : parsed.addresses ?? parsed.data ?? [];
     return NextResponse.json({ addresses });
-  } catch (err) {
+  } catch (err: unknown) {
     try { await server.close(); } catch {}
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    const status = (err as { status?: number })?.status;
+    return NextResponse.json({ error: String(err) }, { status: status === 401 ? 401 : 500 });
   }
 }

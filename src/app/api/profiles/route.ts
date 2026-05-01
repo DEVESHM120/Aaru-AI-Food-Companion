@@ -1,5 +1,6 @@
 import { auth } from "@/auth";
 import { NextRequest } from "next/server";
+import { getProfilesForUser, saveProfilesForUser } from "@/lib/server/memoryStore";
 
 export async function GET() {
   let session = null;
@@ -7,13 +8,8 @@ export async function GET() {
   const email = session?.user?.email;
   if (!email) return Response.json({ profiles: [] });
 
-  try {
-    const { kv } = await import("@vercel/kv");
-    const data = await kv.get<{ profiles: unknown[] }>(`profiles:${email}`);
-    return Response.json({ profiles: data?.profiles ?? [] });
-  } catch {
-    return Response.json({ profiles: [] });
-  }
+  const profiles = await getProfilesForUser(email);
+  return Response.json({ profiles });
 }
 
 export async function POST(req: NextRequest) {
@@ -24,9 +20,8 @@ export async function POST(req: NextRequest) {
 
   try {
     const { profiles } = await req.json();
-    const { kv } = await import("@vercel/kv");
-    await kv.set(`profiles:${email}`, { profiles, updatedAt: Date.now() });
-    return Response.json({ ok: true });
+    const ok = await saveProfilesForUser(email, Array.isArray(profiles) ? profiles : []);
+    return Response.json({ ok });
   } catch {
     return Response.json({ ok: false });
   }

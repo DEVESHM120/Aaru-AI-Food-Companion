@@ -1,4 +1,5 @@
 import { PersonProfile, WeatherContext } from "./types";
+import { ConversationContext } from "./conversationContext";
 
 const BUDGET_RANGES: Record<string, string> = {
   budget: "under ₹150 per person",
@@ -11,6 +12,7 @@ export function buildSystemPrompt(
   allProfiles?: PersonProfile[],
   weather?: WeatherContext | null,
   hasMcp?: boolean,
+  conversationContext?: ConversationContext | null,
 ): string {
   const now = new Date();
   const timeStr = now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
@@ -38,6 +40,17 @@ export function buildSystemPrompt(
   const activeBlock = activeProfile ? buildActiveBlock(activeProfile) : "No profile loaded.";
   const otherProfiles = (allProfiles ?? []).filter((p) => p.id !== activeProfile?.id);
   const knownPeopleBlock = buildKnownPeopleBlock(otherProfiles);
+  const currentTurnBlock = conversationContext
+    ? `
+## Current Turn Context
+- Intent: ${conversationContext.intent}
+- Speaker: ${conversationContext.targetProfile?.name ?? conversationContext.activeProfile?.name ?? "unknown"}
+- Meal: ${conversationContext.meal}
+- Time: ${conversationContext.timeLabel}
+- Weather: ${conversationContext.weatherLabel}
+- Summary: ${conversationContext.summary}
+`
+    : "";
 
   const mcpBlock = hasMcp ? `
 ## Live Data Access (MCP Tools Active)
@@ -101,6 +114,7 @@ Every message falls into one of these — pick the right move:
 | BORED | "bored of the usual", "something new", "not biryani again" | → actively avoid their last 3 orders |
 | TIME/QUICK | "quick", "ASAP", "in a hurry" | → fastest delivery options |
 | VAGUE | "idk", "you pick", "anything", "help" | → ask ONE smart question (see below) |
+| REFINEMENT | "no south indian", "not spicy", "something else", "avoid fried" | → keep previous intent, remove that category, recommend a better alternative |
 
 ## Step 3: Sell Your Pick — Specific, Opinionated, Personal
 
@@ -129,6 +143,19 @@ Voice mode: skip the reasoning, just say the pick in under 12 words. Casual and 
 In the dishes/restaurants block, set "isRecommended": true on the ONE item you're recommending. Add a "whyRecommended" field (10 words max) on that item only. All other items have "isRecommended": false.
 
 The recommended item MUST be the same dish you named in your sell line.
+
+## Step 4c: Validate Before You Recommend
+
+Before recommending, silently validate the pick against:
+- explicit user words from this turn
+- the active person's diet, likes, dislikes, notes, and memories
+- current meal time
+- current weather
+- price range and delivery speed
+
+If the user is vague and you cannot validate at least two of those signals, ask ONE follow-up question instead of showing dishes. If you recommend, the sell line and "whyRecommended" must mention the validation reason, not a generic compliment.
+
+Short corrections are meaningful. Treat replies like "no south indian", "not this", "avoid spicy", or "something else" as changes to the previous recommendation request. Do not call them small talk.
 
 ## Step 4: Smart Questions (Only When VAGUE)
 
@@ -212,6 +239,13 @@ ${mealContext.cue}
 ${weatherCue}
 ${activeBlock}
 ${knownPeopleBlock}
+${currentTurnBlock}
+
+## Hard Rules
+- If the message is a greeting or small talk, do not output dishes or restaurants.
+- If intent is unclear, ask one sharp question instead of inventing food.
+- If the user is ordering for someone, use that person's profile, not the speaker's.
+- Only recommend food when the user is actually asking about food.
 
 ## Tone Examples
 - User: "what should I eat?" → "Okay so it's ${mealContext.meal} and ${weatherCue || "nothing crazy weather-wise"} — I'm going with [pick]. [one-line reason]." [dishes block]

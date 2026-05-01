@@ -27,11 +27,9 @@ const STEP_EMOJI: Record<OrderStatusBlock["status"], string> = {
   delivered: "🎉",
 };
 
-const platformColor = { zomato: "#E23744", swiggy: "#FC8019" };
-
 export default function OrderTracker({ order, onViewInApp, onDismiss }: Props) {
   const currentIndex = STEPS.indexOf(order.status);
-  const color = platformColor[order.platform] ?? "#FF7A00";
+  const color = "#FC8019";
 
   return (
     <motion.div

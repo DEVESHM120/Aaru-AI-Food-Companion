@@ -21,7 +21,7 @@ export interface Restaurant {
   rating: number;
   deliveryTime: number;
   price: number;
-  platform: "zomato" | "swiggy";
+  platform: "swiggy" | "zomato";
   imageUrl?: string;
   offer?: string;
 }
@@ -30,7 +30,7 @@ export interface OrderDetails {
   restaurant: Restaurant;
   item: string;
   price: number;
-  platform: "zomato" | "swiggy";
+  platform: "swiggy" | "zomato";
   estimatedDelivery: number;
   autonomous?: boolean;
   deliveryAddress?: { label: string; locationName: string; addressId?: string };
@@ -38,7 +38,7 @@ export interface OrderDetails {
 
 export interface Dish {
   restaurantName: string;
-  platform: "zomato" | "swiggy";
+  platform: "swiggy" | "zomato";
   dishName: string;
   price: number;
   rating: number;
@@ -82,14 +82,14 @@ export interface CartItem {
   restaurantName: string;
   price: number;
   qty: number;
-  platform: "zomato" | "swiggy";
+  platform: "swiggy" | "zomato";
   isVeg: boolean;
 }
 
 export interface CartBlock {
   items: CartItem[];
   total: number;
-  platform: "zomato" | "swiggy";
+  platform: "swiggy" | "zomato";
   restaurantName: string;
 }
 
@@ -125,5 +125,5 @@ export interface OrderStatusBlock {
   orderId: string;
   status: "accepted" | "preparing" | "picked_up" | "on_the_way" | "delivered";
   eta: number;
-  platform: "zomato" | "swiggy";
+  platform: "swiggy";
 }
